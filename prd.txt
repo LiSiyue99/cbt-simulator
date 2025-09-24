@@ -2,100 +2,46 @@
 
 ### 1. 简介与目标
 
-**项目名称:** AI Visitor 长期对话模拟系统
+项目名称: AI Visitor 长期对话模拟系统
 
-**目标:** 创建一个先进的AI训练工具，允许人类用户与一个具备持续性记忆和人格演化的AI访客，进行长达数月的、高度仿真的CBT咨询练习。本系统的核心在于模拟“历时性”，即AI访客的状态会随着每一次对话和生活模拟而真实演变。
+目标: 创建一个先进的AI训练工具，允许人类用户与一个具备持续性记忆和人格演化的AI访客，进行长达数月的、高度仿真的CBT咨询练习。本系统的核心在于模拟“历时性”，即AI访客的状态会随着每一次对话和生活模拟而真实演变。
 
-### 2. 核心概念定义
+### 2. 角色与权限（更新）
+- 角色：student / assistant_tech / assistant_class / admin
+- 鉴权：白名单邮箱 + 验证码登录，后端签发 JWT（7 天有效）。
+- 视图与数据范围：
+  - student：仅访问自己的 visitor instance 与会话、作业、三联表
+  - assistant_tech：访问绑定的学生范围（assistant_students）
+  - assistant_class：按 classId 查看本班学生与会话（只读），用于进度监督与告警
+  - admin：全局访问
 
-1.  **AI Visitor:** 一个由大型语言模型驱动的、模拟正在接受CBT咨询的虚拟人格。
+### 3. 前端对接要点（更新）
+- 登录：
+  - POST /auth/request-code → POST /auth/verify-code → 保存 token
+  - 请求统一携带 Authorization: Bearer <token>
+- 对话训练：
+  - 开始：POST /sessions/start → sessionId
+  - 聊天：POST /sessions/{id}/messages（逐条）
+  - 结束：POST /sessions/{id}/finalize（assignment 文本）
+  - 历史：GET /sessions/list、GET /sessions/{id}、GET /sessions/last（仅 chat）
+- 作业与互动：
+  - 学生：GET /assignments/list（按实例汇总）
+  - 三联表：POST/GET /thought-records
+  - 提问：POST/GET /questions
+  - 技术助教反馈：POST/GET /assistant/feedback
+- 行政助教：
+  - GET /assistant-class/students、GET /assistant-class/students/{studentId}/sessions
 
-2.  **Full Persona (完整人格):** 这是AI访客在对话期间表现出的完整人格。它是一个**在运行时动态组合**的产物，**并非一个独立存储的数据**。其构成如下：
-    * **Core Persona (核心人格):** 定义访客背景、核心信念和主要困扰的**静态**基础设定。
-    * **Chat Principle (互动原则):** 定义访客在对话中的沟通风格和防御机制的**静态**规则集。
-    * **Long-Term Memory (长期记忆):** 记录所有历史演化的**动态**“成长笔记”。**这是AI访客唯一的状态变量。**
+### 4. 数据表（更新摘要）
+- users(id, email, name, userId: bigint, role, classId: bigint, status)
+- visitor_templates(id, templateKey, corePersona, chatPrinciple)
+- visitor_instances(id, userId→users.id, templateId, longTermMemory)
+- sessions(id, visitorInstanceId, sessionNumber, chatHistory, homework, sessionDiary, preSessionActivity)
+- assistant_students(id, assistantId→users.id, studentId→users.id, visitorInstanceId)
+- thought_records(id, sessionId→sessions.id, ...)
+- questions(id, sessionId, studentId, content, ...)
+- assistant_feedbacks(id, sessionId, assistantId, content, ...)
+- whitelist_emails(email, name, userId: bigint, role, classId: bigint, assignedTechAsst, assignedClassAsst, assignedVisitor, inchargeVisitor, studentCount, status)
 
-3.  **长期记忆 (Long-Term Memory):** 系统的**唯一核心记忆中枢**。这是一个结构化的“成长笔记”文件（XML或JSON格式），记录了从咨询关系开始以来，AI访客所有的关键变化。它是AI访客实现人格演化的唯一依据。
-
-4.  **Activity (生活模拟):** 一个由prompt驱动的系统功能，用于模拟AI访客在两次对话之间的虚拟生活经历。
-
-5.  **Diary (会话日志):** 在每次会话结束后，由AI生成的、对本次谈话内容和感受的第一人称总结。
-
-### 3. 核心交互循环 (The Core Interaction Loop)
-
-这是用户与AI Visitor互动的完整生命周期，由用户的关键操作触发。
-
-#### 阶段一：会话期间 (During Session)
-
-1.  **进行对话:** 用户与AI Visitor进行CBT对话。AI的表现由其**`Full Persona`**（`核心人格` + `互动原则` + `最新的长期记忆`）实时驱动。
-2.  **布置作业:** 在对话过程中的任何合适时机，用户可以输入并为AI访客布置本周的作业。
-3.  **结束对话:** 用户主动点击**“结束对话”**按钮。此操作标志着本次会话的正式结束，并触发会话间期的第一个动作。
-
-#### 阶段二：会话间期 (Inter-Session Actions)
-
-这是一个严格按照顺序执行的后台与前台交互流程。
-
-1.  **生成会话日志 (Diary Generation):**
-    * **触发:** 用户点击“结束对话”后，系统在后台自动执行。
-    * **动作:** 系统调用**“会话日志生成”Prompt**，基于本次的`Chat History`，生成一份`Diary`（第一人称的会话总结）。这份`Diary`被保存下来，用于后续的记忆更新。
-
-2.  **生活模拟 (Activity Simulation):**
-    * **触发:** 用户在未来某个时间点，点击**“开始新对话”**按钮。
-    * **动作:** 系统首先执行**“生活模拟”Prompt**。
-    * **输入:**
-        * 人格蓝图 (由`核心人格` + `最新的长期记忆`组成)
-        * 最新结束的对话 (`Latest Chat History`)
-        * 最新布置的作业 (`Latest Homework`)
-    * **输出:** 生成一份`Activity`报告（包含对作业完成情况的模拟）。
-
-3.  **更新长期记忆 (Long-Term Memory Update):**
-    * **触发:** `Activity`报告生成后，系统**立即**在后台执行。
-    * **动作:** 系统向用户**展示`Activity`报告**的同时，后台调用**“长期记忆生成与维护”Prompt**。
-    * **输入:**
-        * 最新生成的会话日志 (`Latest Diary`)
-        * 最新生成的生活模拟 (`Latest Activity`)
-        * 更新前的长期记忆 (`Latest Long-Term Memory`)
-    * **输出:** 生成一份**全新的、完整的`Long-Term Memory`**。这份新文件将覆盖旧文件，成为系统最新的状态。
-
-4.  **准备就绪，开始新对话 (Ready for New Session):**
-    * **触发:** 新的`Long-Term Memory`生成完毕后。
-    * **动作:** 系统此时已具备了全新的`Full Persona`（因为`Long-Term Memory`已更新）。用户在查看完`Activity`报告后，即可无缝地与一个状态已更新的AI Visitor开始新一轮的对话。整个循环回到**阶段一**。
-
-### 4. 后端数据库Schema设计 (v3.0)
-
-根据以上流程，我们对数据库结构进行最终优化。所有表都默认包含`id`, `created_at`, `updated_at`字段。
-
-#### `users` (用户表)
-* `id` (PK)
-* `name` (string)
-* `email` (string, unique)
-
-#### `visitor_templates` (AI访客模板表)
-* `id` (PK)
-* `name` (string) - 例如：“艺术家-Lila”
-* `brief` (text) - 对该模板人格的简短描述
-* `core_persona` (jsonb) - **核心人格**，静态基础设定。
-* `chat_principle` (jsonb) - **互动原则**，静态沟通规则。
-
-#### `visitor_instances` (用户专属的AI访客实例表)
-* `id` (PK)
-* `user_id` (FK, references `users.id`)
-* `template_id` (FK, references `visitor_templates.id`)
-* `long_term_memory` (text/jsonb) - **系统的唯一状态变量**。存储不断被覆写的“成长笔记”。
-
-#### `sessions` (会话记录表)
-* `id` (PK)
-* `visitor_instance_id` (FK, references `visitor_instances.id`)
-* `session_number` (integer) - 标记这是第几次会话。
-* `chat_history` (jsonb) - 本次会话的完整聊天记录。
-* `assigned_homework` (text) - 用户在本次会话中布置的作业内容。
-* `session_diary` (text) - 本次会话结束后，AI生成的日志。
-* `weekly_activity_report` (jsonb) - 在**下一次**会话开始前，生成并展示给用户的本周期生活模拟报告。
-
-#### `thought_records` (用户三联表记录) 
-* `id` (PK)
-* `session_id` (FK, references `sessions.id`)
-* `user_id` (FK, references `users.id`)
-* `triggering_event` (text) - （事件）
-* `thoughts_and_beliefs` (text) - （想法/信念）
-* `consequences` (text) - （结果）
+### 5. 告警（预留）
+- 行政助教：监控本班学生在每周“结束对话”后是否提交三联表与作业；若低于阈值，生成告警（后续迭代）。

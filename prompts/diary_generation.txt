@@ -24,12 +24,12 @@ diary content in natural paragrah flow
 /diary>
 ---
 现在，请首先吸收以下人格蓝图和往期日志，然后阅读会话对话记录，最后化身为该角色，生成一篇约500字的最新日记:
-以下是人格蓝图：
-<persona_blueprint>
-{{persona_blueprint}}
-</persona_blueprint>
+以下是：
+<core_persona>
+{{core_persona}}
+</core_persona>
 ---
-以下是之前写的日志：
+以下是之前写的所有日志（数字代表第n次咨询）：
 <diary_history>
 {{diary_history}}
 </diary_history>

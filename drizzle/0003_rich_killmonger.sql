@@ -1,0 +1,2 @@
+ALTER TABLE "visitor_templates" ADD COLUMN "template_key" varchar(64) NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "visitor_templates_key_uq" ON "visitor_templates" USING btree ("template_key");
