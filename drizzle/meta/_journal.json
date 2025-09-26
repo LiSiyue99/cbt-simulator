@@ -43,6 +43,69 @@
       "when": 1758702702309,
       "tag": "0005_nervous_leper_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1758715599275,
+      "tag": "0006_living_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1758850294128,
+      "tag": "0007_fixed_jackal",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1758854206193,
+      "tag": "0008_hesitant_barracuda",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1758869000000,
+      "tag": "0007_core_persona_text",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1758874018098,
+      "tag": "0010_milky_pete_wisdom",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1758889987461,
+      "tag": "0011_messy_synch",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1758891851291,
+      "tag": "0012_curved_king_cobra",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1758898185881,
+      "tag": "0013_awesome_colossus",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1758905235673,
+      "tag": "0014_pretty_the_fallen",
+      "breakpoints": true
     }
   ]
 }

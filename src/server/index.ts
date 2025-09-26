@@ -6,8 +6,6 @@ import { registerSessionRoutes } from './routes/sessions';
 import { registerThoughtRecordRoutes } from './routes/thoughtRecords';
 import { registerAuthRoutes } from './routes/auth';
 import { registerAssistantRoutes } from './routes/assistant';
-import { registerQuestionRoutes } from './routes/questions';
-import { registerFeedbackRoutes } from './routes/feedbacks';
 import { registerAdminRoutes } from './routes/admin';
 import { registerAssignmentRoutes } from './routes/assignments';
 import authPlugin from './plugins/auth';
@@ -18,6 +16,9 @@ export async function buildServer() {
     logger: true,
     disableRequestLogging: false,
     requestIdHeader: 'x-request-id',
+    connectionTimeout: 300000, // 5 minutes
+    keepAliveTimeout: 65000,   // 65 seconds
+    requestTimeout: 300000,    // 5 minutes for long-running AI operations
   });
 
   await app.register(cors, { origin: true });
@@ -28,11 +29,11 @@ export async function buildServer() {
   await registerThoughtRecordRoutes(app);
   await registerAuthRoutes(app);
   await registerAssistantRoutes(app);
-  await registerQuestionRoutes(app);
-  await registerFeedbackRoutes(app);
+  // 旧 questions/feedbacks 已废弃，统一由 assistant chat 替代
   await registerAdminRoutes(app);
   await registerAssignmentRoutes(app);
   await registerAssistantClassRoutes(app);
+  // ensure playground routes are registered via assistant routes module (already included)
 
   return app;
 }

@@ -1,7 +1,7 @@
 import { createDb } from '../db/client';
-import { users, sessions, thoughtRecords, assistantFeedbacks, assistantStudents, weeklyCompliance, visitorInstances } from '../db/schema';
+import { users, sessions, thoughtRecords, assistantStudents, weeklyCompliance, visitorInstances, assistantChatMessages } from '../db/schema';
 import { eq, and, desc } from 'drizzle-orm';
-import { getBeijingNow, formatWeekKey, getStudentDeadline, getAssistantDeadline } from '../policy/timeWindow';
+import { getBeijingNow, formatWeekKey, getStudentDeadline, getAssistantDeadline, getSessionOverrideUntil } from '../policy/timeWindow';
 
 export async function computeClassWeekCompliance(classId: number, weekKey?: string) {
   const db = createDb();
@@ -26,18 +26,36 @@ export async function computeClassWeekCompliance(classId: number, weekKey?: stri
       hasSession = sessRows.length > 0 ? 1 : 0;
 
       const trRows = await db.select().from(thoughtRecords).where(eq(thoughtRecords.sessionId as any, (sessRows[0] as any)?.id));
-      hasThoughtRecordByFri = trRows.some((r: any) => new Date(r.createdAt) <= studentDeadline) ? 1 : 0;
+      // 会话级覆盖优先
+      let effStudentDeadline = studentDeadline;
+      if (sessRows[0]) {
+        const over = await getSessionOverrideUntil((sessRows[0] as any).id, 'extend_student_tr');
+        if (over) effStudentDeadline = over;
+      }
+      hasThoughtRecordByFri = trRows.some((r: any) => new Date(r.createdAt) <= effStudentDeadline) ? 1 : 0;
 
       const binds = await db.select().from(assistantStudents).where(eq(assistantStudents.studentId as any, (stu as any).id));
       assistantId = (binds[0] as any)?.assistantId || null;
 
+      // 助教反馈改为“助教发送过至少一条消息”
       if (sessRows.length) {
-        const fbRows = await db.select().from(assistantFeedbacks).where(eq(assistantFeedbacks.sessionId as any, (sessRows[0] as any).id));
-        hasAnyFeedbackBySun = fbRows.some((r: any) => new Date(r.createdAt) <= assistantDeadline) ? 1 : 0;
+        const chatRows = await db.select().from(assistantChatMessages).where(and(
+          eq(assistantChatMessages.sessionId as any, (sessRows[0] as any).id),
+          eq(assistantChatMessages.senderRole as any, 'assistant_tech' as any)
+        ));
+        let effAssistantDeadline = assistantDeadline;
+        const over2 = await getSessionOverrideUntil((sessRows[0] as any).id, 'extend_assistant_feedback');
+        if (over2) effAssistantDeadline = over2;
+        hasAnyFeedbackBySun = chatRows.some((r: any) => new Date(r.createdAt) <= effAssistantDeadline) ? 1 : 0;
       }
 
       // 锁定逻辑：过了周五且未提交三联表
-      if (getBeijingNow() > studentDeadline && hasThoughtRecordByFri === 0) locked = 1;
+      let lockCheckDeadline = studentDeadline;
+      if (sessRows[0]) {
+        const over = await getSessionOverrideUntil((sessRows[0] as any).id, 'extend_student_tr');
+        if (over) lockCheckDeadline = over;
+      }
+      if (getBeijingNow() > lockCheckDeadline && hasThoughtRecordByFri === 0) locked = 1;
     }
 
     await db.insert(weeklyCompliance).values({

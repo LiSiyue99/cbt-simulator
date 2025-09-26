@@ -22,7 +22,9 @@
     "dev:api": "tsx src/server/index.ts",
     "test:e2e": "tsx src/tests/e2ePrdFlow.ts",
     "test:ltm": "tsx src/tests/ltmExtraction.spec.ts",
-    "print:last-ltm": "tsx src/tests/printLastLtm.ts"
+    "print:last-ltm": "tsx src/tests/printLastLtm.ts",
+    "seed:playground": "tsx src/main/seedPlaygroundInstances.ts",
+    "ops:assign-csv": "tsx src/main/generateAssignmentsCsv.ts whitelist-0926.csv assigned-output.csv"
   },
   "repository": {
     "type": "git",

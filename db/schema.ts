@@ -89,7 +89,8 @@ export const visitorTemplates = pgTable(
     name: varchar("name", { length: 256 }).notNull(),
     brief: text("brief").notNull(),
     // 模板级不变数据：Core Persona 与 Chat Principle
-    corePersona: jsonb("core_persona").notNull(),
+    // 统一改为纯文本存储
+    corePersona: text("core_persona").notNull(),
     chatPrinciple: text("chat_principle").notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -101,6 +102,8 @@ export const visitorTemplates = pgTable(
     };
   }
 );
+
+// 核心人设版本历史已移除（按最新产品决策）
 
 // 用户专属的访客实例：仅包含长期记忆（唯一可变状态）
 export const visitorInstances = pgTable(
@@ -269,44 +272,59 @@ export const whitelistEmails = pgTable(
 );
 
 // 学生→助教 提问（按会话归档，多条记录，倒序）
-export const questions = pgTable(
-  "questions",
+// 旧表 questions/assistant_feedbacks 已被统一聊天替代并删除
+
+// 双向聊天：学生与助教围绕某会话的即时消息
+export const assistantChatMessages = pgTable(
+  "assistant_chat_messages",
   {
     id: text("id").primaryKey().$defaultFn(() => createId()),
     sessionId: text("session_id").notNull().references(() => sessions.id, { onDelete: "cascade" }),
-    studentId: text("student_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    senderRole: varchar("sender_role", { length: 32 }).notNull(), // 'student' | 'assistant_tech'
+    senderId: text("sender_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     content: text("content").notNull(),
-    status: varchar("status", { length: 32 }).notNull().default("open"), // open | answered | closed
-    dueAt: timestamp("due_at"),
+    status: varchar("status", { length: 16 }).notNull().default("unread"), // unread | read
     createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => {
     return {
-      idxSession: index("questions_session_idx").on(table.sessionId),
-      idxStudent: index("questions_student_idx").on(table.studentId),
+      idxSession: index("assistant_chat_messages_session_idx").on(table.sessionId),
+      idxSender: index("assistant_chat_messages_sender_idx").on(table.senderId),
+      idxStatus: index("assistant_chat_messages_status_idx").on(table.status),
     };
   }
 );
 
-// 助教→学生 文字反馈（按会话归档，多条记录，倒序）
-export const assistantFeedbacks = pgTable(
-  "assistant_feedbacks",
+// 会话级 DDL 覆盖（回合制按会话设置）
+export const sessionDeadlineOverrides = pgTable(
+  "session_deadline_overrides",
   {
     id: text("id").primaryKey().$defaultFn(() => createId()),
     sessionId: text("session_id").notNull().references(() => sessions.id, { onDelete: "cascade" }),
-    assistantId: text("assistant_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-    content: text("content").notNull(),
-    status: varchar("status", { length: 32 }).notNull().default("published"), // draft | published
-    dueAt: timestamp("due_at"),
+    action: varchar("action", { length: 32 }).notNull(), // 'extend_student_tr' | 'extend_assistant_feedback'
+    until: timestamp("until").notNull(), // 绝对时间
+    reason: text("reason"),
+    createdBy: text("created_by").notNull().references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => {
     return {
-      idxSession: index("assistant_feedbacks_session_idx").on(table.sessionId),
-      idxAssistant: index("assistant_feedbacks_assistant_idx").on(table.assistantId),
+      idxSession: index("session_deadline_overrides_session_idx").on(table.sessionId),
     };
+  }
+);
+
+// 审计日志（Admin 关键操作追踪）
+export const auditLogs = pgTable(
+  "audit_logs",
+  {
+    id: text("id").primaryKey().$defaultFn(() => createId()),
+    actorId: text("actor_id").notNull(),
+    action: varchar("action", { length: 64 }).notNull(),
+    targetType: varchar("target_type", { length: 64 }).notNull(),
+    targetId: text("target_id").notNull(),
+    summary: text("summary"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
   }
 );
 
@@ -331,6 +349,67 @@ export const weeklyCompliance = pgTable(
     return {
       idxWeekClass: index("weekly_compliance_week_class_idx").on(table.weekKey, table.classId),
       idxStudentWeek: index("weekly_compliance_student_week_idx").on(table.studentId, table.weekKey),
+    };
+  }
+);
+
+// 管控策略：全局时间窗（可选，若不存在则使用默认策略）
+export const systemConfigs = pgTable(
+  "system_configs",
+  {
+    key: varchar("key", { length: 64 }).primaryKey(),
+    value: text("value").notNull(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  }
+);
+
+// DDL 临时解锁：允许管理员对某学生或某助教在某周放宽限制
+export const deadlineOverrides = pgTable(
+  "deadline_overrides",
+  {
+    id: text("id").primaryKey().$defaultFn(() => createId()),
+    subjectType: varchar("subject_type", { length: 16 }).notNull(), // 'student' | 'assistant'
+    subjectId: text("subject_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    weekKey: varchar("week_key", { length: 16 }).notNull(), // YYYY-WW
+    // 允许的操作：'extend_student_tr' | 'extend_assistant_feedback'
+    action: varchar("action", { length: 32 }).notNull(),
+    // 截止到的时间（ISO）或天数偏移，采用绝对时间
+    until: timestamp("until").notNull(),
+    reason: text("reason"),
+    // 批量标识与作用域（批量创建时写入）
+    batchId: text("batch_id"),
+    batchScope: text("batch_scope"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    createdBy: text("created_by").notNull().references(() => users.id, { onDelete: "set null" }),
+  },
+  (table) => {
+    return {
+      idxSubjectWeek: index("deadline_overrides_subject_week_idx").on(table.subjectId, table.weekKey),
+      idxWeek: index("deadline_overrides_week_idx").on(table.weekKey),
+    };
+  }
+);
+
+/**
+ * =================================================================================
+ * Multi-Role Authorization (User Role Grants)
+ * =================================================================================
+ */
+
+// 多角色授权表：为用户授予附加角色与可选的班级作用域
+export const userRoleGrants = pgTable(
+  "user_role_grants",
+  {
+    id: text("id").primaryKey().$defaultFn(() => createId()),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    role: varchar("role", { length: 32 }).notNull(), // student | assistant_tech | assistant_class | admin
+    classId: bigint("class_id", { mode: 'number' }), // 仅 assistant_class 使用
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => {
+    return {
+      idxUser: index("user_role_grants_user_idx").on(table.userId),
+      idxUserRole: index("user_role_grants_user_role_idx").on(table.userId, table.role),
     };
   }
 );

@@ -8,7 +8,7 @@ function getSecret(): Uint8Array {
   return enc.encode(secret);
 }
 
-export type JwtPayload = { userId: string; role: string; email: string };
+export type JwtPayload = { userId: string; role?: string; roles?: string[]; email: string; classScopes?: Array<{ role: string; classId?: number }>; };
 
 export async function signJwt(payload: JwtPayload): Promise<string> {
   return await new SignJWT(payload as any)

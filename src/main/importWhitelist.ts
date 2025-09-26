@@ -4,6 +4,7 @@ import path from 'node:path';
 import { parse } from 'csv-parse';
 import { createDb } from '../db/client';
 import { users, whitelistEmails, visitorTemplates, visitorInstances, assistantStudents } from '../db/schema';
+import { userRoleGrants } from '../db/schema';
 import { eq, and, desc } from 'drizzle-orm';
 
 /**
@@ -41,6 +42,35 @@ async function readCsv(filePath: string): Promise<WhitelistRow[]> {
   });
 }
 
+async function upsertWhitelistEmails(rows: WhitelistRow[]) {
+  const db = createDb();
+  for (const r of rows) {
+    const [existing] = await db.select().from(whitelistEmails).where(eq(whitelistEmails.email as any, r.email));
+    const payload: any = {
+      email: r.email,
+      name: r.name || null,
+      userId: r.userId || r.studentNo || null,
+      role: r.role,
+      classId: r.classId || null,
+      assignedTechAsst: r.assignedTechAsst || null,
+      assignedClassAsst: r.assignedClassAsst || null,
+      assignedVisitor: r.assignedVisitor || null,
+      inchargeVisitor: r.inchargeVisitor ? JSON.parse(r.inchargeVisitor) : null,
+      studentCount: r.studentCount ? Number(r.studentCount) : 0,
+      status: (r.status as any) || 'active',
+      updatedAt: new Date(),
+    };
+    if (!existing) {
+      await db.insert(whitelistEmails).values({
+        ...payload,
+        createdAt: new Date(),
+      });
+    } else {
+      await db.update(whitelistEmails).set(payload).where(eq(whitelistEmails.email as any, r.email));
+    }
+  }
+}
+
 async function upsertUsersFromWhitelist(rows: WhitelistRow[]) {
   const db = createDb();
   for (const r of rows) {
@@ -66,6 +96,28 @@ async function upsertUsersFromWhitelist(rows: WhitelistRow[]) {
         status: (r.status as any) || (existing as any).status,
         updatedAt: new Date(),
       } as any).where(eq(users.id as any, (existing as any).id));
+    }
+  }
+}
+
+async function upsertUserRoleGrants(rows: WhitelistRow[]) {
+  const db = createDb();
+  // 仅处理 assistant_class 行：为对应用户授予行政助教角色与班级作用域
+  for (const r of rows.filter(r => r.role === 'assistant_class')) {
+    const [u] = await db.select().from(users).where(eq(users.email as any, r.email));
+    if (!u) continue;
+    // 检查是否已有相同授权
+    const existing = await db.select().from(userRoleGrants)
+      .where(eq(userRoleGrants.userId as any, (u as any).id));
+    const hasGrant = (existing as any[]).some(g => (g as any).role === 'assistant_class' && (g as any).classId === (r.classId ? Number(r.classId) : null));
+    if (!hasGrant) {
+      await db.insert(userRoleGrants).values({
+        id: crypto.randomUUID(),
+        userId: (u as any).id,
+        role: 'assistant_class',
+        classId: r.classId ? Number(r.classId) : null,
+        createdAt: new Date(),
+      } as any);
     }
   }
 }
@@ -142,7 +194,10 @@ async function main() {
   const csvFile = process.argv[2];
   if (!csvFile) throw new Error('Usage: tsx src/main/importWhitelist.ts <csv_file_path>');
   const rows = await readCsv(path.resolve(csvFile));
+  // 先白名单 upsert，确保认证链路可用
+  await upsertWhitelistEmails(rows);
   await upsertUsersFromWhitelist(rows);
+  await upsertUserRoleGrants(rows);
   await assignStudents(rows);
   console.log('Whitelist import completed.');
 }

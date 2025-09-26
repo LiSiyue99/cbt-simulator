@@ -26,6 +26,16 @@ export function getAssistantDeadline(weekKey: string): Date {
   return endOfWeekdayBeijing(year, ww, 7);
 }
 
+// 会话级覆盖：若存在，返回 until，否则返回 null
+export async function getSessionOverrideUntil(sessionId: string, action: 'extend_student_tr' | 'extend_assistant_feedback'): Promise<Date | null> {
+  const { createDb } = await import('../db/client');
+  const { sessionDeadlineOverrides } = await import('../db/schema');
+  const { eq, and, desc } = await import('drizzle-orm');
+  const db = createDb();
+  const rows = await db.select().from(sessionDeadlineOverrides).where(and(eq(sessionDeadlineOverrides.sessionId as any, sessionId), eq(sessionDeadlineOverrides.action as any, action))).orderBy(desc(sessionDeadlineOverrides.createdAt as any)).limit(1);
+  return (rows as any[]).length ? new Date((rows[0] as any).until) : null;
+}
+
 function endOfWeekdayBeijing(year: number, weekNo: number, weekday: number): Date {
   // weekday: 1..7 => Mon..Sun; return that day's 24:00 (next day 00:00)
   const firstThursday = new Date(Date.UTC(year, 0, 1)) as any;
