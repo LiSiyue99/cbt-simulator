@@ -169,7 +169,7 @@ GET `/dashboard/todos?visitorInstanceId=...`
 - 待批改三联表：GET `/assistant/pending-thought-records`
 
 ### 助教-学生聊天（统一替代 questions/assistant_feedbacks）
-- 列表：GET `/assistant/chat?sessionId=...` → `{ items, unreadCount }`
+- 列表：GET `/assistant/chat?sessionId=...&page=1&pageSize=50` → `{ items, unreadCount, page, pageSize, total }`
 - 发送：POST `/assistant/chat` → `{ id }`
 - 标记已读：POST `/assistant/chat/read` → `{ ok: true }`
 
@@ -190,7 +190,9 @@ GET `/dashboard/todos?visitorInstanceId=...`
 
 ## Admin（管理员）
 - 概览：GET `/admin/overview`
-- 用户 CRUD：GET/POST/PUT/DELETE `/admin/users`
+- 用户 CRUD：
+  - GET `/admin/users?role=&status=&q=&page=1&pageSize=50` → `{ items, page, pageSize, total }`
+  - POST/PUT/DELETE `/admin/users`
 - 分配：
   - 学生模板：POST `/admin/assignments/assign-template`
   - 设置助教：POST `/admin/assignments/assign-assistant`

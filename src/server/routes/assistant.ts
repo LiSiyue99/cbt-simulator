@@ -829,7 +829,7 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
   app.get('/assistant/chat', async (req, reply) => {
     const db = createDb();
     const payload = (req as any).auth;
-    const { sessionId } = (req.query || {}) as any;
+    const { sessionId, page = 1, pageSize = 50 } = (req.query || {}) as any;
     if (!sessionId) return reply.status(400).send({ error: 'missing sessionId' });
 
     const [s] = await db.select().from(sessions).where(eq(sessions.id as any, sessionId));
@@ -844,10 +844,28 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
       if (!bind) return reply.status(403).send({ error: 'forbidden' });
     }
 
-    const rows = await db.select().from(assistantChatMessages).where(eq(assistantChatMessages.sessionId as any, sessionId)).orderBy(desc(assistantChatMessages.createdAt as any));
-    // 未读计数：对方发来的且状态为 unread
-    const unreadCount = (rows as any[]).filter(m => m.status === 'unread' && m.senderRole !== payload.role).length;
-    return reply.send({ items: rows, unreadCount });
+    const offset = (Number(page) - 1) * Number(pageSize);
+    const totalRows = await db.select({ count: sql`count(*)` }).from(assistantChatMessages).where(eq(assistantChatMessages.sessionId as any, sessionId));
+    const total = Number((totalRows[0] as any)?.count || 0);
+
+    const rows = await db
+      .select()
+      .from(assistantChatMessages)
+      .where(eq(assistantChatMessages.sessionId as any, sessionId))
+      .orderBy(desc(assistantChatMessages.createdAt as any))
+      .limit(Number(pageSize))
+      .offset(offset);
+
+    // 未读计数：对方发来的且状态为 unread（总未读）
+    const unreadRows = await db.select({ count: sql`count(*)` })
+      .from(assistantChatMessages)
+      .where(and(
+        eq(assistantChatMessages.sessionId as any, sessionId),
+        eq(assistantChatMessages.status as any, 'unread' as any),
+        sql`${assistantChatMessages.senderRole} <> ${payload.role}`
+      ));
+    const unreadCount = Number((unreadRows[0] as any)?.count || 0);
+    return reply.send({ items: rows, unreadCount, page: Number(page), pageSize: Number(pageSize), total });
   });
 
   // 聊天：发送消息（学生/助教均可）

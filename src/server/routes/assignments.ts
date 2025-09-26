@@ -44,20 +44,34 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
       .where(eq(sessions.visitorInstanceId as any, visitorInstanceId))
       .orderBy(desc(sessions.sessionNumber as any));
 
-    const items = [] as any[];
-    for (const s of sessRows as any[]) {
-      const sessionId = s.id;
-      const tr = await db.select().from(thoughtRecords).where(eq(thoughtRecords.sessionId as any, sessionId));
-      const chat = await db.select().from(assistantChatMessages).where(eq(assistantChatMessages.sessionId as any, sessionId));
-      items.push({
-        sessionId,
-        sessionNumber: s.sessionNumber,
-        createdAt: s.createdAt,
-        homework: s.homework || [],
-        thoughtRecordCount: tr.length,
-        chatCount: chat.length,
-      });
+    // 聚合统计（避免 N+1）
+    const sessionIds = (sessRows as any[]).map((r: any) => r.id);
+    let trCounts: Record<string, number> = {};
+    let chatCounts: Record<string, number> = {};
+    if (sessionIds.length) {
+      const trRows = await db
+        .select({ sessionId: thoughtRecords.sessionId, cnt: sql`count(*)` })
+        .from(thoughtRecords)
+        .where((thoughtRecords.sessionId as any).in ? (thoughtRecords.sessionId as any).in(sessionIds) : sql`${thoughtRecords.sessionId} = any(${sessionIds})`)
+        .groupBy(thoughtRecords.sessionId as any);
+      for (const r of trRows as any[]) trCounts[(r as any).sessionId] = Number((r as any).cnt || 0);
+
+      const chatRows = await db
+        .select({ sessionId: assistantChatMessages.sessionId, cnt: sql`count(*)` })
+        .from(assistantChatMessages)
+        .where((assistantChatMessages.sessionId as any).in ? (assistantChatMessages.sessionId as any).in(sessionIds) : sql`${assistantChatMessages.sessionId} = any(${sessionIds})`)
+        .groupBy(assistantChatMessages.sessionId as any);
+      for (const r of chatRows as any[]) chatCounts[(r as any).sessionId] = Number((r as any).cnt || 0);
     }
+
+    const items = (sessRows as any[]).map((s: any) => ({
+      sessionId: s.id,
+      sessionNumber: s.sessionNumber,
+      createdAt: s.createdAt,
+      homework: s.homework || [],
+      thoughtRecordCount: trCounts[s.id] || 0,
+      chatCount: chatCounts[s.id] || 0,
+    }));
 
     return reply.send({ items });
   });

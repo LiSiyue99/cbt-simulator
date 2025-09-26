@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { createDb } from '../../db/client';
 import { systemConfigs, deadlineOverrides, users, sessions, sessionDeadlineOverrides, visitorInstances, visitorTemplates, auditLogs, assistantStudents } from '../../db/schema';
 import { formatWeekKey } from '../../policy/timeWindow';
-import { eq, and, desc, inArray } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import { createId } from '@paralleldrive/cuid2';
 
 export async function registerAdminRoutes(app: FastifyInstance) {
@@ -190,11 +190,21 @@ export async function registerAdminRoutes(app: FastifyInstance) {
   app.get('/admin/users', async (req, reply) => {
     const payload = (app as any).requireRole(req, ['admin']);
     const db = createDb();
-    const { role, status, q } = (req.query || {}) as any;
-    let rows = await db.select().from(users);
-    // 简单过滤（内存过滤，后续可转SQL条件）
-    rows = (rows as any[]).filter((u: any) => (!role || u.role === role) && (!status || u.status === status) && (!q || (u.name||'').includes(q) || (u.email||'').includes(q)));
-    return reply.send({ items: rows });
+    const { role, status, q, page = 1, pageSize = 50 } = (req.query || {}) as any;
+
+    const where: any[] = [];
+    if (role) where.push(sql`${users.role} = ${role}`);
+    if (status) where.push(sql`${users.status} = ${status}`);
+    if (q) where.push(sql`(${users.email} ILIKE ${'%' + q + '%'} OR ${users.name} ILIKE ${'%' + q + '%'})`);
+
+    const offset = (Number(page) - 1) * Number(pageSize);
+    const base = db.select().from(users).where(where.length ? and(...where as any) : sql`true`).orderBy(desc(users.createdAt as any));
+
+    const totalRows = await db.select({ count: sql`count(*)` }).from(users).where(where.length ? and(...where as any) : sql`true`);
+    const total = Number((totalRows[0] as any)?.count || 0);
+
+    const rows = await (base as any).limit(Number(pageSize)).offset(offset);
+    return reply.send({ items: rows, page: Number(page), pageSize: Number(pageSize), total });
   });
 
   app.post('/admin/users', async (req, reply) => {

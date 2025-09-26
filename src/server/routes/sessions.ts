@@ -3,7 +3,7 @@ import { createSession, createSessionAuto, appendChatTurn } from '../../services
 import { finalizeSessionById, prepareNewSession } from '../../services/sessionPipeline';
 import { createDb } from '../../db/client';
 import { sessions, visitorInstances, visitorTemplates, thoughtRecords, longTermMemoryVersions } from '../../db/schema';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, sql } from 'drizzle-orm';
 import { getBeijingNow, formatWeekKey, getStudentDeadline } from '../../policy/timeWindow';
 import { chatWithVisitor, type FullPersona, type ChatTurn } from '../../chat/sessionOrchestrator';
 
@@ -84,7 +84,7 @@ export async function registerSessionRoutes(app: FastifyInstance) {
         finalizedAt: sessions.finalizedAt,
         diary: sessions.sessionDiary,
         act: sessions.preSessionActivity,
-        chatHistory: sessions.chatHistory
+        msgCount: sql`jsonb_array_length(${sessions.chatHistory})`
       })
       .from(sessions)
       .where(eq(sessions.visitorInstanceId, visitorInstanceId))
@@ -93,25 +93,25 @@ export async function registerSessionRoutes(app: FastifyInstance) {
       .offset(offset);
 
     const items = await Promise.all(rows.map(async (r) => {
-      // Count messages
-      const chatHistory = (r.chatHistory as any[]) || [];
-      const messageCount = chatHistory.length;
+      const messageCount = Number((r as any).msgCount || 0);
 
       // Check for thought records
       const thoughtRecordsResult = await db
         .select({ id: thoughtRecords.id })
         .from(thoughtRecords)
         .where(eq(thoughtRecords.sessionId as any, r.id));
-
-      // Get last message for preview
       let lastMessage = null;
-      if (includePreview && chatHistory.length > 0) {
-        const lastMsg = chatHistory[chatHistory.length - 1];
-        lastMessage = {
-          speaker: lastMsg.speaker,
-          content: lastMsg.content,
-          timestamp: lastMsg.timestamp
-        };
+      if (includePreview) {
+        // 读取最后一条消息作为预览（避免返回整个 chatHistory）
+        const last = await db
+          .select({ content: sql`(chat->>'content')`, speaker: sql`(chat->>'speaker')`, ts: sql`(chat->>'timestamp')` })
+          .from(sql`jsonb_array_elements(${sessions.chatHistory}) as chat` as any)
+          .where(sql`${sessions.id} = ${r.id}`)
+          .orderBy(sql`(chat->>'timestamp') DESC`)
+          .limit(1);
+        if ((last as any[]).length) {
+          lastMessage = { speaker: (last as any)[0].speaker as any, content: (last as any)[0].content as any, timestamp: (last as any)[0].ts as any } as any;
+        }
       }
 
       return {
