@@ -1,3 +1,155 @@
+# CBT Simulator – 可用性与并发提升工作台
+
+## Background and Motivation
+- 目标：短期内支撑约 80 人并发聊天（单实例或多副本），在上游 LLM（DashScope/Qwen）波动时保持服务可用与可预期的体验。
+- 现状：服务端使用 Fastify + Drizzle，聊天走同步请求-响应。AI 调用集中在 `src/client/qwen.ts`，未设置超时/重试/熔断/并发门控，单一提供商；路由层同步等待 LLM 返回；无请求级幂等键。
+- 风险：
+  - 上游 429/5xx/网络抖动导致单请求失败或长时间挂起；
+  - 高峰期触发提供商限流，导致尾部请求级联超时；
+  - 前端体验受阻（无流式/无降级），用户感知差；
+  - 无内部回退（多提供商/多模型），“备用 API”由前端轮询切换并不可取。
+
+## Key Challenges and Analysis
+1) 并发与背压
+   - 路由层未对“同时在飞的 LLM 调用”做并发上限与排队；80 并发在一个实例上可能瞬间透传到上游，触发 429。
+2) 稳定性
+   - 缺少请求超时、指数退避重试（针对可重试的 429/5xx/网络错误）、熔断（持续失败时快速失败并触发降级）。
+3) 供给冗余
+   - 仅使用 Qwen（DashScope 兼容 API）；无多提供商/多模型回退与健康检查；无权重/轮询策略。
+4) 体验
+   - 无 SSE/流式返回；长响应期间用户无反馈；失败不区分可重试/不可重试；
+5) 正确性
+   - `appendMessage` 先写入 user，再调用 LLM；LLM 失败不会落 AI 消息，幂等重试可能造成重复 AI 回复缺少保护；
+6) 可观测性
+   - 统计/追踪不足（p95 时延、错误率、上游返回码分布、熔断命中率）。
+
+## High-level Task Breakdown
+1) 引入提供商无关的 LLM 客户端层（抽象）
+   - 成果：`src/client/llm/index.ts` 暴露统一接口（chatComplete），适配 `qwen`, 可选 `openai`/`moonshot` 等，通过环境变量配置可用提供商与权重。
+   - 成功标准：保持现有调用点最小改动即可切换；单测覆盖“正常/429/5xx/网络错误”。
+
+2) 请求级稳态控制（超时/重试/抖动/可重试判定）
+   - 成果：对单次 LLM 调用设置超时（如 20–25s）、指数退避重试（最多 2–3 次，带抖动），仅对 429/5xx/网络错误重试；
+   - 成功标准：在人工注入 429/5xx 时 p95 成功率显著提升，重试上限受控。
+
+3) 并发门控与轻量队列
+   - 成果：在进程内引入并发上限（如 16–24）与排队（最大等待时间与队列长度）；溢出快速失败（返回“稍后再试”）；
+   - 成功标准：在 80 并发压测时，上游 429 显著下降，总吞吐稳定，尾部延迟可控。
+
+4) 熔断与健康探测
+   - 成果：为每个提供商增加熔断器（失败率阈值 + 半开恢复）；定期健康检查与冷却；
+   - 成功标准：上游长时间异常期间快速降级，不拖垮请求线程，自动恢复后可平滑切回。
+
+5) 多提供商/多模型回退策略
+   - 成果：按权重/优先级路由到主提供商；主失败后快速切换次提供商或次模型；支持“请求拆分与合并”（可选）；
+   - 成功标准：主提供商不可用时，用户成功率保持 > 98%。
+
+6) 前端流式与错误体验优化（SSE）
+   - 成果：新增 SSE 端点（或保持现有端点但支持流式）；loading 占位及时呈现，错误文案区分可重试与不可重试；
+   - 成功标准：用户可见首字节 < 2s（在上游可流式时），失败给出明确提示与自动重试策略（一次）。
+
+7) 幂等与重复保护
+   - 成果：`/sessions/{id}/messages` 支持 `idempotencyKey`；后端写 AI 回复前检查最近一次 AI 是否已存在相同 key；
+   - 成功标准：网络重试不产生重复 AI 回复或丢失。
+
+8) 速率限制与配额
+   - 成果：按用户/IP/会话的软限流（令牌桶/滑动窗口）与拒绝策略；
+   - 成功标准：恶意/误触发的突发不会影响整体可用性。
+
+9) 可观测性
+   - 成果：指标（p50/p95/p99、错误率、重试次数、熔断计数、队列长度）、结构化日志、采样追踪；
+   - 成功标准：Grafana/Logs 能定位失败原因与瓶颈。
+
+10) 压测与回归
+   - 成果：k6/Artillery 压测脚本（80 并发），单元/集成测试覆盖关键策略；
+   - 成功标准：80 并发下错误率 < 2%，p95 < 6–8s（示例目标，可与产品对齐）。
+
+## Project Status Board
+- [ ] 设计并提交 LLM 客户端抽象与配置（含提供商注册表）
+- [ ] 为 LLM 调用增加超时/重试（指数退避）
+- [ ] 增加并发门控与排队（带上限与快速失败）
+- [ ] 接入熔断与健康检查
+- [ ] 实现多提供商回退策略（权重/优先/健康）
+- [ ] 后端支持 SSE 流式聊天（前端适配）
+- [ ] `/sessions/{id}/messages` 增加 `idempotencyKey`
+- [ ] 用户/IP 级限流
+- [ ] 指标与日志完善（p95、错误率、重试、队列）
+- [ ] 压测脚本与门槛（80 并发）
+
+## Cloud Deployment Plan (Aliyun)
+目标：将后端与前端部署到阿里云（ECS + RDS/PostgreSQL），绑定自有域名，启用 HTTPS，具备基础可观测与备份，支持后续水平扩展。
+
+### 架构最小可行方案
+- 计算：1 台 ECS（Ubuntu 22.04 LTS），部署后端 `cbt-simulator`（Fastify）与前端 `cbt-simulator-front`（Next.js 静态/SSR），使用 Nginx 反向代理与 TLS 终止。
+- 数据库：阿里云 RDS for PostgreSQL（专有网络 VPC），开启自动备份，最小规格起步。
+- 网络：ECS 与 RDS 位于同一 VPC 子网；RDS 仅允许来自 ECS 安全组的访问；公网仅暴露 80/443。
+- 域名与证书：域名 DNS A/AAAA 指向 ECS 公网 IP；Nginx + certbot 申请 Let’s Encrypt 证书，强制 HTTPS。
+- 运维：pm2 或 systemd 守护 Node 进程；GitHub Actions 进行 CI/CD 自动化部署；阿里云 CloudMonitor 告警。
+
+### 关键参数与环境变量
+- `DATABASE_URL`: `postgres://<user>:<password>@<rds_hostname>:5432/<db>?sslmode=require`
+- `DASHSCOPE_API_KEY`: Qwen 凭证（保存在服务器环境变量或 Secret Manager）
+- 其它：`PORT=3000`、JWT/加密密钥（如有）
+
+### 分步实施（从哪里开始）
+1) 选定阿里云地域与创建 VPC/VSwitch（若无则新建），规划网段。
+2) 创建 RDS for PostgreSQL：设置计算/存储规格、开启自动备份（PITR 可选），创建数据库与专用用户，配置安全组仅放行 ECS。
+3) 本地验证 RDS 连接（临时白名单）并运行迁移：在本地或临时 runner 上执行 Drizzle 迁移以初始化架构。
+4) 创建 ECS（Ubuntu 22.04）：绑定到同一 VPC，安全组仅开放 22/80/443；设置 SSH 密钥登录，禁用密码登录。
+5) 在 ECS 安装运行时：Node.js LTS、pm2（或 Docker）、git、nginx、certbot。
+6) 部署后端：拉取代码，配置 `.env`（仅必要变量），安装依赖，运行迁移（针对 RDS），使用 pm2 启动与开机自启。
+7) 部署前端：构建静态产物（或配置 Next.js 运行模式），由 Nginx 提供静态与反向代理到后端 3000 端口。
+8) 配置 Nginx 虚拟主机：反向代理、超时、压缩、限速可选；通过 certbot 申请并自动续期证书。
+9) 域名 DNS 解析：A/AAAA 记录指向 ECS 公网 IP，验证 HTTP/HTTPS 访问。
+10) CI/CD：配置 GitHub Actions，push 到 main 触发 SSH/rsync 或 Artifact 上线，重启 pm2 进程；添加环境分支（可选）。
+11) 可观测性：启用 CloudMonitor 指标与告警（CPU、内存、磁盘、带宽、端口存活、HTTP 探针），输出结构化日志；如需，部署 Prometheus/Grafana。
+12) 备份/恢复演练：确认 RDS 自动备份策略与保留期；导出冷备；演练单表/整库恢复流程。
+13) 安全加固：最小权限账户、fail2ban、定期系统补丁、仅必要端口开放；敏感变量不入仓库。
+14) 扩展预案：当并发上升时，前端可 CDN，后端增加 ECS 副本 + SLB 负载均衡；RDS 垂直升级或只读实例分流。
+
+## Current Status / Progress Tracking
+- 已完成：现状评估与改造计划初稿。
+- 待定：选择 Planner 还是 Executor 进入下一步；确认可用的备选提供商与基础设施（Redis/监控）。
+
+### Migration – RDS (Structure Only)
+进行中：收集信息并准备在 RDS 上执行 Drizzle 迁移，仅创建表结构。
+
+所需信息（请提供）
+- RDS 内网域名（或内网 IP）与端口（默认 5432）
+- 目标数据库名（如 app_db）
+- 迁移使用账号（建议业务独立账号，具备 DDL 权限）：用户名与一次性密码
+- 连接方式：
+  - 方案A：在 ECS 上执行（推荐，内网直连）
+  - 方案B：本地通过 SSH 隧道转发至 ECS，再连 RDS 内网
+
+拟执行步骤（获批后执行）
+1) 在指定环境（ECS 或本地隧道）设置临时 `.env`：`DATABASE_URL` 指向 RDS。
+2) 使用项目内 Drizzle CLI 运行迁移：`npm run drizzle:push` 或等价脚本。
+3) 校验：对照 `drizzle/meta/*_snapshot.json` 与 `src/db/schema.ts`，确认表/索引/外键一致；记录迁移版本。
+4) 不写入任何业务数据，仅创建结构。
+
+命令准备
+- ECS 直连：在 ECS 上执行 `node -v && npm -v`，安装依赖并运行迁移。
+- SSH 隧道：`ssh -N -L 5433:<RDS内网域名>:5432 <ecs_user>@<ECS公网IP>`，本地把 `DATABASE_URL` 指向 `localhost:5433`。
+
+
+## Executor's Feedback or Assistance Requests
+1) 备选提供商：是否可以接入任一或多项？（勾选）
+   - [ ] OpenAI（`OPENAI_API_KEY`）
+   - [ ] Moonshot/Kimi
+   - [ ] 继续使用 Qwen（主）并加备份区域/模型（如 `qwen-turbo`）
+2) 基础设施：
+   - 是否可用 Redis（用于排队/限流/分布式锁）？若暂无，先走进程内方案。
+   - 监控/日志栈（Prom/Grafana/ELK）是否已有？没有则先输出本地指标与结构化日志。
+3) 体验：前端能否接受 SSE 流式与一次自动重试？
+4) 目标阈值：确认 p95 延迟与最大错误率目标（例如 p95 < 8s，错误率 < 2%）。
+
+## Lessons
+- 在修改前先读取文件、最小化编辑面。
+- 如出现依赖漏洞，先执行 `npm audit` 评估。
+- 任何 `git push -f` 操作需提前确认。
+- 程序输出包含调试信息便于定位。
+
 Background and Motivation
 - Goal: Align database schema with PRD v3.0 for AI Visitor loop (Session → Diary → Activity → Long-Term Memory update), and clarify where Core Persona should live.
 
