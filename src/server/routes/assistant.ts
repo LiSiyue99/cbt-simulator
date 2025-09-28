@@ -4,6 +4,14 @@ import { assistantStudents, users, sessions, longTermMemoryVersions, visitorInst
 import { eq, desc, and, sql, isNull, inArray } from 'drizzle-orm';
 
 export async function registerAssistantRoutes(app: FastifyInstance) {
+  // 兜底：学生一律禁止访问 playground 下的所有接口
+  app.addHook('onRequest', async (req, reply) => {
+    try {
+      if ((req as any).url?.startsWith?.('/playground/') && (req as any).auth?.role === 'student') {
+        return reply.status(403).send({ error: 'forbidden' });
+      }
+    } catch {}
+  });
   // Admin 概览（KPI 聚合，不含学生明细）
   app.get('/admin/overview', async (req, reply) => {
     const payload = (app as any).requireRole(req, ['admin']);

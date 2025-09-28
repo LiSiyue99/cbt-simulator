@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../../db/client';
 import { sessions, visitorInstances, assistantStudents, thoughtRecords, assistantChatMessages } from '../../db/schema';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 
 export async function registerAssignmentRoutes(app: FastifyInstance) {
   // 学生端作业汇总：按实例列出所有会话的作业与互动状态
@@ -52,14 +52,14 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
       const trRows = await db
         .select({ sessionId: thoughtRecords.sessionId, cnt: sql`count(*)` })
         .from(thoughtRecords)
-        .where((thoughtRecords.sessionId as any).in ? (thoughtRecords.sessionId as any).in(sessionIds) : sql`${thoughtRecords.sessionId} = any(${sessionIds})`)
+        .where(inArray(thoughtRecords.sessionId as any, sessionIds as any))
         .groupBy(thoughtRecords.sessionId as any);
       for (const r of trRows as any[]) trCounts[(r as any).sessionId] = Number((r as any).cnt || 0);
 
       const chatRows = await db
         .select({ sessionId: assistantChatMessages.sessionId, cnt: sql`count(*)` })
         .from(assistantChatMessages)
-        .where((assistantChatMessages.sessionId as any).in ? (assistantChatMessages.sessionId as any).in(sessionIds) : sql`${assistantChatMessages.sessionId} = any(${sessionIds})`)
+        .where(inArray(assistantChatMessages.sessionId as any, sessionIds as any))
         .groupBy(assistantChatMessages.sessionId as any);
       for (const r of chatRows as any[]) chatCounts[(r as any).sessionId] = Number((r as any).cnt || 0);
     }

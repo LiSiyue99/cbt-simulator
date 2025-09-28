@@ -2,9 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { createSession, createSessionAuto, appendChatTurn } from '../../services/sessionCrud';
 import { finalizeSessionById, prepareNewSession } from '../../services/sessionPipeline';
 import { createDb } from '../../db/client';
-import { sessions, visitorInstances, visitorTemplates, thoughtRecords, longTermMemoryVersions } from '../../db/schema';
+import { sessions, visitorInstances, visitorTemplates, thoughtRecords, longTermMemoryVersions, assistantStudents } from '../../db/schema';
 import { eq, desc, sql } from 'drizzle-orm';
-import { getBeijingNow, formatWeekKey, getStudentDeadline } from '../../policy/timeWindow';
+import { getBeijingNow, formatWeekKey, getStudentDeadline, getWeeklyOverrideUntil, getStudentOpenTime, getConfiguredStudentOpenTime } from '../../policy/timeWindow';
 import { chatWithVisitor, type FullPersona, type ChatTurn } from '../../chat/sessionOrchestrator';
 
 export async function registerSessionRoutes(app: FastifyInstance) {
@@ -28,16 +28,78 @@ export async function registerSessionRoutes(app: FastifyInstance) {
       const now = getBeijingNow();
       const weekKey = formatWeekKey(now);
       const deadline = getStudentDeadline(weekKey);
-      if (now > deadline) {
+      const openAt = await getConfiguredStudentOpenTime(weekKey);
+      // 读取周级豁免：extend_student_tr 同时放开“开始新会话”
+      let effectiveDeadline = deadline;
+      if (payload?.userId) {
+        try {
+          const over = await getWeeklyOverrideUntil(payload.userId, weekKey, 'extend_student_tr');
+          if (over) effectiveDeadline = over;
+        } catch {}
+      }
+      // 开放前直接禁止
+      if (now < openAt) {
+        return reply.status(403).send({ error: 'forbidden', code: 'student_not_open_yet', message: '本周对话将在周二0:00开放（北京时间）' });
+      }
+      if (now > effectiveDeadline) {
         return reply.status(403).send({ error: 'forbidden', code: 'student_locked_for_week', message: '本周已失去开启对话权限（北京时间）' });
       }
     }
-    if (auto !== false) {
-      const out = await createSessionAuto(visitorInstanceId);
-      return reply.send(out);
+    // 结合进度与配额（仅学生适用）：
+    const db = createDb();
+    if ((req as any).auth?.role === 'student') {
+      // 若存在未完成会话，禁止创建下一次，返回进行中的会话信息
+      const [lastRow] = await db.select().from(sessions).where(eq(sessions.visitorInstanceId, visitorInstanceId)).orderBy(desc(sessions.sessionNumber)).limit(1);
+      if (lastRow && !(lastRow as any).finalizedAt) {
+        return reply.status(409).send({ error: 'session_unfinished', sessionId: (lastRow as any).id, sessionNumber: (lastRow as any).sessionNumber });
+      }
+
+      // 周度配额：每名学生每周仅允许创建一次新会话（窗口内）+ 一小时冷却
+      const now2 = getBeijingNow();
+      const wk = formatWeekKey(now2);
+      const openAt2 = getStudentOpenTime(wk);
+      const deadline2 = getStudentDeadline(wk);
+
+      // 近一小时冷却
+      const oneHourAgo = new Date(now2.getTime() - 60 * 60 * 1000);
+      const createdRecently = await db
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(sql`${sessions.visitorInstanceId} = ${visitorInstanceId} AND ${sessions.createdAt} >= ${oneHourAgo}`)
+        .limit(1);
+      if ((createdRecently as any[]).length > 0) {
+        return reply.status(403).send({ error: 'forbidden', code: 'cooldown_recent_created', message: '请稍后再开始下一次对话' });
+      }
+
+      const createdThisWeek = await db
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(sql`${sessions.visitorInstanceId} = ${visitorInstanceId} AND ${sessions.createdAt} >= ${openAt2}`);
+      const finishedThisWeek = await db
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(sql`${sessions.visitorInstanceId} = ${visitorInstanceId} AND ${sessions.finalizedAt} IS NOT NULL AND ${sessions.finalizedAt} >= ${openAt2} AND ${sessions.finalizedAt} <= ${deadline2}`);
+      if ((createdThisWeek as any[]).length > 0 || (finishedThisWeek as any[]).length > 0) {
+        return reply.status(403).send({ error: 'forbidden', code: 'weekly_quota_exhausted', message: '本周新对话名额已使用' });
+      }
     }
-    const sessionId = await createSession({ visitorInstanceId, sessionNumber });
-    return reply.send({ sessionId, sessionNumber });
+
+    // 目标会话编号：基于“已完成”的最大编号 + 1（防止跳级）
+    const rowsCompleted = await db
+      .select({ n: sessions.sessionNumber })
+      .from(sessions)
+      .where(sql`${sessions.visitorInstanceId} = ${visitorInstanceId} AND ${sessions.finalizedAt} IS NOT NULL`)
+      .orderBy(desc(sessions.sessionNumber))
+      .limit(1);
+    const nextNumber = ((rowsCompleted as any[])[0]?.n ?? 0) + 1;
+
+    const useNumber = typeof sessionNumber === 'number' ? Number(sessionNumber) : nextNumber;
+    if (auto !== false) {
+      const id = await createSession({ visitorInstanceId, sessionNumber: useNumber });
+      return reply.send({ sessionId: id, sessionNumber: useNumber });
+    }
+    const id = await createSession({ visitorInstanceId, sessionNumber: useNumber });
+    return reply.send({ sessionId: id, sessionNumber: useNumber });
   });
 
   // 最近一条（聊天页自动加载）
@@ -102,15 +164,12 @@ export async function registerSessionRoutes(app: FastifyInstance) {
         .where(eq(thoughtRecords.sessionId as any, r.id));
       let lastMessage = null;
       if (includePreview) {
-        // 读取最后一条消息作为预览（避免返回整个 chatHistory）
-        const last = await db
-          .select({ content: sql`(chat->>'content')`, speaker: sql`(chat->>'speaker')`, ts: sql`(chat->>'timestamp')` })
-          .from(sql`jsonb_array_elements(${sessions.chatHistory}) as chat` as any)
-          .where(sql`${sessions.id} = ${r.id}`)
-          .orderBy(sql`(chat->>'timestamp') DESC`)
-          .limit(1);
-        if ((last as any[]).length) {
-          lastMessage = { speaker: (last as any)[0].speaker as any, content: (last as any)[0].content as any, timestamp: (last as any)[0].ts as any } as any;
+        // 更安全：单条查询该会话 chat_history，并在应用层取最后一条
+        const [fullRow] = await db.select({ chat: sessions.chatHistory }).from(sessions).where(eq(sessions.id, (r as any).id));
+        const hist = ((fullRow as any)?.chat || []) as any[];
+        if (Array.isArray(hist) && hist.length) {
+          const last = hist[hist.length - 1];
+          lastMessage = { speaker: (last as any).speaker, content: (last as any).content, timestamp: (last as any).timestamp } as any;
         }
       }
 
@@ -152,6 +211,41 @@ export async function registerSessionRoutes(app: FastifyInstance) {
       preSessionActivity: row.preSessionActivity,
       homework: row.homework,
     });
+  });
+
+  // 读取某个 visitor 实例的模板信息（name、templateKey、brief）
+  app.get('/visitor/template', {
+    schema: {
+      querystring: {
+        type: 'object',
+        required: ['visitorInstanceId'],
+        properties: { visitorInstanceId: { type: 'string' } },
+      },
+    },
+  }, async (req, reply) => {
+    const db = createDb();
+    const { visitorInstanceId } = req.query as any;
+    const payload = (req as any).auth;
+
+    // 授权：学生需为 owner；助教需绑定；admin 允许
+    if (!payload) return reply.status(401).send({ error: 'unauthorized' });
+
+    const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, visitorInstanceId));
+    if (!inst) return reply.status(404).send({ error: 'visitor instance not found' });
+
+    if (payload.role === 'student' && (inst as any).userId !== payload.userId) {
+      return reply.status(403).send({ error: 'forbidden' });
+    }
+    if (payload.role === 'assistant_tech') {
+      const [bind] = await db.select().from(assistantStudents).where(eq(assistantStudents.visitorInstanceId as any, visitorInstanceId));
+      if (!bind) return reply.status(403).send({ error: 'forbidden' });
+    }
+
+    const [tpl] = await db.select({ name: visitorTemplates.name, templateKey: visitorTemplates.templateKey, brief: visitorTemplates.brief })
+      .from(visitorTemplates)
+      .where(eq(visitorTemplates.id as any, (inst as any).templateId));
+    if (!tpl) return reply.status(404).send({ error: 'template not found' });
+    return reply.send({ name: (tpl as any).name, templateKey: (tpl as any).templateKey, brief: (tpl as any).brief });
   });
 
   app.post('/sessions/:sessionId/messages', {

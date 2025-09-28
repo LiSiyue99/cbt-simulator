@@ -31,8 +31,47 @@ POST `/sessions/start`
 语义
 - 默认启用“后端自增会话号”，按该实例当前最大 `session_number` 自动 +1。
 - 返回 `sessionId` 与实际分配的 `sessionNumber`。随后前端使用该 `sessionId` 追加消息。
+- 学生专属窗口与限流（助教/admin/playground 不受以下限制）：
+  - 开放窗口：周二 00:00 ~ 周五 24:00（北京时间）。周二之前 → `403 student_not_open_yet`；周五之后 → `403 student_locked_for_week`。
+  - 周度配额：一周仅允许创建一次新会话（窗口期内，如本周已创建/已完成过任一会话）→ `403 weekly_quota_exhausted`。
+  - 一小时冷却：近 1 小时内已经创建过新会话 → `403 cooldown_recent_created`。
+  - 未完成阻断：存在未结束的会话 → `409 session_unfinished`（返回 `{ sessionId, sessionNumber }`）。
+  - 周级豁免 `extend_student_tr`：放宽“封窗时间”（截止到 `until`），但不绕过配额/冷却/未完成检查。
+
+配置项（Admin 可在“时间窗设置”修改）：
+- `student_open_weekday` 默认 `2`（周二 00:00 开放）
+- `student_deadline_weekday` 默认 `5`（周五 24:00 截止）
+- `assistant_deadline_weekday` 默认 `7`（周日 24:00 助教反馈截止）
 
 ---
+
+示例
+```bash
+# 成功（助教/Playground 或学生在窗口内、满足条件）
+curl -X POST http://localhost:3000/sessions/start \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"visitorInstanceId":"VI-UUID"}'
+
+# 学生窗口未开（周二 00:00 之前）
+curl -i -X POST http://localhost:3000/sessions/start \
+  -H "Authorization: Bearer $STU_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"visitorInstanceId":"VI-UUID"}'
+# → 403 {"error":"forbidden","code":"student_not_open_yet"}
+
+# 学生本周封窗（周五 24:00 之后，除非存在 extend_student_tr 豁免）
+# → 403 {"error":"forbidden","code":"student_locked_for_week"}
+
+# 学生一周已使用名额
+# → 403 {"error":"forbidden","code":"weekly_quota_exhausted"}
+
+# 一小时冷却中
+# → 403 {"error":"forbidden","code":"cooldown_recent_created"}
+
+# 存在未完成会话
+# → 409 {"error":"session_unfinished","sessionId":"...","sessionNumber":N}
+```
 
 ### 2) 追加一条消息（Append Message）
 POST `/sessions/{sessionId}/messages`
@@ -61,6 +100,13 @@ POST `/sessions/{sessionId}/messages`
 - 将一条对话写入 `sessions.chatHistory`（JSONB 数组）。
 - 当 `speaker` 为 `"user"` 时，后端自动生成AI回复并同步返回。
 
+示例
+```bash
+curl -X POST http://localhost:3000/sessions/SESSION_ID/messages \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"speaker":"user","content":"我今天有点紧张"}'
+```
+
 ---
 
 ### 3) 结束会话（Finalize Session，异步生成）
@@ -79,6 +125,13 @@ POST `/sessions/{sessionId}/finalize`
 行为
 1. 写入 `sessionDiary` 与 `homework`，设置 `finalizedAt`。
 2. 后台异步生成 `preSessionActivity` 与更新 LTM（同时写入 `long_term_memory_versions`）。
+
+示例
+```bash
+curl -X POST http://localhost:3000/sessions/SESSION_ID/finalize \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"assignment":"请在本周完成..."}'
+```
 
 ---
 
@@ -128,6 +181,9 @@ GET `/sessions/list?visitorInstanceId=...&page=1&pageSize=20&includePreview=true
 }
 ```
 
+说明
+- `includePreview=true` 时预览的最后一条消息由应用层从 `chat_history` 读取，避免复杂 SQL 子查询错误。
+
 ---
 
 ### 2.7）读取单次会话详情
@@ -149,6 +205,15 @@ GET `/dashboard/todos?visitorInstanceId=...`
 ```
 
 ---
+
+### 2.9）读取访客模板信息（展示模板简介 brief）
+GET `/visitor/template?visitorInstanceId=...`
+
+响应体
+```json
+{ "name": "模板名称", "templateKey": "4", "brief": "模板简介..." }
+```
+授权：学生（该实例 owner）、assistant_tech/assistant_class（与实例有绑定）、admin。
 
 ## 三联表（Thought Records）
 
@@ -185,8 +250,45 @@ GET `/dashboard/todos?visitorInstanceId=...`
 - ensure：POST `/playground/ensure`
 - 列表：GET `/playground/instances`
 - 查看个人实例LTM与历史：GET `/playground/ltm?visitorInstanceId=...`
+- 权限：学生 `student` 角色被后端严格禁止访问任意 `/playground/*` 路由（返回 403）。
 
 ---
+
+## 时序图（Mermaid）
+
+学生一次完整对话流程（含时间窗与配额校验）
+```mermaid
+sequenceDiagram
+  participant U as 学生前端
+  participant API as Fastify API
+  participant DB as 数据库
+
+  U->>API: POST /sessions/start
+  API->>DB: 查询未完成/本周已创建/已完成/近1小时创建
+  API-->>U: 403/409（不满足）或 200 {sessionId}
+
+  U->>API: POST /sessions/{id}/messages (多次)
+  API->>DB: 追加 chat_history 并生成 AI 回复
+  API-->>U: { ok, aiResponse }
+
+  U->>API: POST /sessions/{id}/finalize
+  API->>DB: 写入 diary/homework/finalizedAt
+  API-->>U: { diary }
+
+  U->>API: GET /sessions/list?includePreview=true
+  API->>DB: 读取基础列表 + 单条 chat_history
+  API-->>U: { items, lastMessage }
+```
+
+Playground 访问限制（学生被拒绝）
+```mermaid
+sequenceDiagram
+  participant S as 学生前端
+  participant API as Fastify API
+
+  S->>API: GET /playground/ltm
+  API-->>S: 403 forbidden (playground_access_denied)
+```
 
 ## Admin（管理员）
 - 概览：GET `/admin/overview`
@@ -204,6 +306,71 @@ GET `/dashboard/todos?visitorInstanceId=...`
   - 时间窗：GET/POST `/admin/policy/time-window`
   - 周级 DDL 解锁：POST `/admin/policy/ddl-override`、GET `/admin/policy/ddl-override`、POST `/admin/policy/ddl-override/batch`、GET `/admin/policy/ddl-override/recent`
   - 会话级 DDL：GET/POST `/admin/policy/session-override`、GET `/admin/policy/session-override/recent`
+### 管理员：周级 DDL 解锁（批量）
+POST `/admin/policy/ddl-override/batch`
+
+请求体
+```json
+{
+  "items": [
+    { "subjectId": "student-uuid-1", "weekKey": "2025-40", "action": "extend_student_tr", "until": "2025-10-12T16:00:00.000Z" },
+    { "subjectId": "student-uuid-2", "weekKey": "2025-40", "action": "extend_student_tr", "until": "2025-10-12T16:00:00.000Z" }
+  ]
+}
+```
+
+说明
+- `action = extend_student_tr` 同时放开“开始新会话+三联表提交”的封窗限制，直到 `until`。
+- 不绕过：未完成阻断、周度配额、一小时冷却。
+
+响应体
+```json
+{ "ok": true, "inserted": 2 }
+```
+
+常见错误
+```json
+{ "error": "bad_request", "message": "missing subjectId/weekKey/action/until" }
+```
+
+### 管理员：人员与分配 数据结构样例
+
+1) 助教负责学生列表 GET `/admin/assistant-students`
+```json
+{
+  "items": [
+    {
+      "id": "rel-uuid",
+      "assistantId": "assistant-user-uuid",
+      "studentId": "student-user-uuid",
+      "visitorInstanceId": "visitor-instance-uuid",
+      "studentName": "王小明",
+      "studentEmail": "xm@example.com",
+      "visitorName": "AI访客-小鹏",
+      "templateKey": "4"
+    }
+  ]
+}
+```
+
+2) 学生分配助教 POST `/admin/assignments/assign-assistant`
+```json
+{
+  "studentId": "student-user-uuid",
+  "assistantId": "assistant-user-uuid",
+  "visitorInstanceId": "visitor-instance-uuid"
+}
+```
+
+3) 批量分配/改派 POST `/admin/assignments/bulk`
+```json
+{
+  "items": [
+    { "studentId": "student-1", "assistantId": "assistant-A" },
+    { "studentId": "student-2", "assistantId": "assistant-B", "templateKey": "4" }
+  ]
+}
+```
 
 ---
 

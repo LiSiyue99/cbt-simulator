@@ -396,7 +396,23 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const payload = (app as any).requireRole(req, ['admin']);
     const db = createDb();
     const { assistantId } = (req.query || {}) as any;
-    const rows = assistantId ? await db.select().from(assistantStudents).where(eq(assistantStudents.assistantId as any, assistantId)) : await db.select().from(assistantStudents);
+    // 联表返回学生姓名/邮箱 + 访客名称与模板键，便于前端展示
+    const base = db
+      .select({
+        id: assistantStudents.id,
+        assistantId: assistantStudents.assistantId,
+        studentId: assistantStudents.studentId,
+        studentName: users.name,
+        studentEmail: users.email,
+        visitorInstanceId: assistantStudents.visitorInstanceId,
+        visitorName: visitorTemplates.name,
+        templateKey: visitorTemplates.templateKey,
+      })
+      .from(assistantStudents)
+      .leftJoin(users, eq(users.id as any, assistantStudents.studentId as any))
+      .leftJoin(visitorInstances, eq(visitorInstances.id as any, assistantStudents.visitorInstanceId as any))
+      .leftJoin(visitorTemplates, eq(visitorTemplates.id as any, visitorInstances.templateId as any));
+    const rows = assistantId ? await (base as any).where(eq(assistantStudents.assistantId as any, assistantId)) : await base;
     return reply.send({ items: rows });
   });
 
