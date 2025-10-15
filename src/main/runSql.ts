@@ -15,7 +15,12 @@ async function main() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error('缺少 DATABASE_URL');
 
-  const client = new Client({ connectionString: url });
+  const sslCaPath = process.env.PGSSLROOTCERT || process.env.DATABASE_SSL_CA;
+  const sslConfig = sslCaPath
+    ? { rejectUnauthorized: true, ca: fs.readFileSync(sslCaPath, 'utf8') }
+    : undefined;
+
+  const client = new Client({ connectionString: url, ssl: sslConfig });
   await client.connect();
   try {
     await client.query('BEGIN');

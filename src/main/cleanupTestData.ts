@@ -42,7 +42,6 @@ async function run() {
   ` as any);
   // 依赖外键顺序：先子表 homework_submissions，再 long_term_memory_versions，最后 sessions
   await db.execute(
-    // @ts-expect-error drizzle node-postgres execute 原样透传
     `TRUNCATE TABLE homework_submissions, long_term_memory_versions, sessions RESTART IDENTITY CASCADE;`
   );
   console.log('Test tables truncated.');

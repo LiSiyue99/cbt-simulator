@@ -18,7 +18,8 @@ async function runDemo() {
   console.log('DIARY:', d.diary.slice(0, 120) + '...');
 
   const a = await generateActivity({
-    personaBlueprint,
+    corePersona: personaBlueprint,
+    longTermMemory: '<longterm_memory/>',
     sessionChat,
     assignment,
   });

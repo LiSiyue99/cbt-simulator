@@ -7,7 +7,7 @@ CREATE TABLE "deadline_overrides" (
 	"until" timestamp NOT NULL,
 	"reason" text,
 	"created_at" timestamp DEFAULT now() NOT NULL,
-	"created_by" text NOT NULL
+	"created_by" text
 );
 --> statement-breakpoint
 CREATE TABLE "session_deadline_overrides" (
@@ -16,7 +16,7 @@ CREATE TABLE "session_deadline_overrides" (
 	"action" varchar(32) NOT NULL,
 	"until" timestamp NOT NULL,
 	"reason" text,
-	"created_by" text NOT NULL,
+	"created_by" text,
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
@@ -26,7 +26,7 @@ CREATE TABLE "system_configs" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-DROP TABLE "core_persona_versions" CASCADE;--> statement-breakpoint
+DROP TABLE IF EXISTS "core_persona_versions" CASCADE;--> statement-breakpoint
 ALTER TABLE "deadline_overrides" ADD CONSTRAINT "deadline_overrides_subject_id_users_id_fk" FOREIGN KEY ("subject_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deadline_overrides" ADD CONSTRAINT "deadline_overrides_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session_deadline_overrides" ADD CONSTRAINT "session_deadline_overrides_session_id_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

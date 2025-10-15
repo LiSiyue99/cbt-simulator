@@ -930,7 +930,15 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
   // 历史版本接口已移除
 
   // 聊天：获取消息（学生/助教均可）
-  app.get('/assistant/chat', async (req, reply) => {
+  app.get('/assistant/chat', {
+    config: {
+      rateLimit: {
+        max: Number(process.env.RATELIMIT_ASSISTANT_CHAT_GET_MAX || 60),
+        timeWindow: process.env.RATELIMIT_ASSISTANT_CHAT_GET_WINDOW || '1 minute',
+        keyGenerator: (req: any) => (req?.auth?.userId) || req.ip,
+      }
+    }
+  }, async (req, reply) => {
     const db = createDb();
     const payload = (req as any).auth;
     const { sessionId, page = 1, pageSize = 50 } = (req.query || {}) as any;
@@ -981,6 +989,13 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
         properties: { sessionId: { type: 'string' }, content: { type: 'string' } },
       },
     },
+    config: {
+      rateLimit: {
+        max: Number(process.env.RATELIMIT_ASSISTANT_CHAT_POST_MAX || 30),
+        timeWindow: process.env.RATELIMIT_ASSISTANT_CHAT_POST_WINDOW || '1 minute',
+        keyGenerator: (req: any) => (req?.auth?.userId) || req.ip,
+      }
+    }
   }, async (req, reply) => {
     const db = createDb();
     const payload = (req as any).auth;
@@ -1012,7 +1027,15 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
   });
 
   // 标记消息为已读（将对方消息置为 read）
-  app.post('/assistant/chat/read', async (req, reply) => {
+  app.post('/assistant/chat/read', {
+    config: {
+      rateLimit: {
+        max: Number(process.env.RATELIMIT_ASSISTANT_CHAT_READ_MAX || 120),
+        timeWindow: process.env.RATELIMIT_ASSISTANT_CHAT_READ_WINDOW || '1 minute',
+        keyGenerator: (req: any) => (req?.auth?.userId) || req.ip,
+      }
+    }
+  }, async (req, reply) => {
     const db = createDb();
     const payload = (req as any).auth;
     const { sessionId } = (req.body || {}) as any;

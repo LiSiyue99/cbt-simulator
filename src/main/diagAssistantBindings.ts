@@ -3,7 +3,13 @@ import { createDb } from '../db/client';
 import { users, assistantStudents, visitorInstances, visitorTemplates } from '../db/schema';
 import { eq, inArray } from 'drizzle-orm';
 
-function cleanEmail(e:string){return (e||'').replace(/[\u2000-\u200B\u3000]/g,'').trim().toLowerCase();}
+function cleanEmail(e: string) {
+  return (e || '')
+    .replace(/[\u2000-\u200B\u3000]/g, '')
+    .replace(/\s+/g, '')
+    .trim()
+    .toLowerCase();
+}
 
 async function main(){
   const db = createDb();

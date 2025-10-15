@@ -339,7 +339,7 @@ export const sessionDeadlineOverrides = pgTable(
     action: varchar("action", { length: 32 }).notNull(), // 'extend_student_tr' | 'extend_assistant_feedback'
     until: timestamp("until").notNull(), // 绝对时间
     reason: text("reason"),
-    createdBy: text("created_by").notNull().references(() => users.id, { onDelete: "set null" }),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => {
@@ -415,7 +415,7 @@ export const deadlineOverrides = pgTable(
     batchId: text("batch_id"),
     batchScope: text("batch_scope"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
-    createdBy: text("created_by").notNull().references(() => users.id, { onDelete: "set null" }),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
   },
   (table) => {
     return {

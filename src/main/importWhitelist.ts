@@ -25,6 +25,14 @@ type WhitelistRow = {
   status?: 'active' | 'inactive';
 };
 
+function cleanEmail(e: string): string {
+  return (e || '')
+    .replace(/[\u2000-\u200B\u3000]/g, '') // 去除零宽/全角空白
+    .replace(/\s+/g, '') // 去除任何普通空格（防止中间混入空格）
+    .trim()
+    .toLowerCase();
+}
+
 function required<T>(v: T | undefined | null, msg: string): T {
   if (v === undefined || v === null || v === '') throw new Error(msg);
   return v;
@@ -47,9 +55,11 @@ async function readCsv(filePath: string): Promise<WhitelistRow[]> {
 async function upsertWhitelistEmails(rows: WhitelistRow[]) {
   const db = createDb();
   for (const r of rows) {
-    const [existing] = await db.select().from(whitelistEmails).where(eq(whitelistEmails.email as any, r.email));
+    const email = cleanEmail(r.email);
+    if (!email) continue;
+    const [existing] = await db.select().from(whitelistEmails).where(eq(whitelistEmails.email as any, email));
     const payload: any = {
-      email: r.email,
+      email,
       name: r.name || null,
       userId: r.userId || r.studentNo || null,
       role: r.role,
@@ -66,7 +76,7 @@ async function upsertWhitelistEmails(rows: WhitelistRow[]) {
         createdAt: new Date(),
       });
     } else {
-      await db.update(whitelistEmails).set(payload).where(eq(whitelistEmails.email as any, r.email));
+      await db.update(whitelistEmails).set(payload).where(eq(whitelistEmails.email as any, email));
     }
   }
 }
@@ -74,11 +84,13 @@ async function upsertWhitelistEmails(rows: WhitelistRow[]) {
 async function upsertUsersFromWhitelist(rows: WhitelistRow[]) {
   const db = createDb();
   for (const r of rows) {
-    const [existing] = await db.select().from(users).where(eq(users.email as any, r.email));
+    const email = cleanEmail(r.email);
+    if (!email) continue;
+    const [existing] = await db.select().from(users).where(eq(users.email as any, email));
     if (!existing) {
       await db.insert(users).values({
         id: crypto.randomUUID(),
-        email: r.email,
+        email,
         name: r.name || null,
         userId: r.userId || r.studentNo || null,
         role: r.role,
@@ -104,7 +116,9 @@ async function upsertUserRoleGrants(rows: WhitelistRow[]) {
   const db = createDb();
   // 仅处理 assistant_class 行：为对应用户授予行政助教角色与班级作用域
   for (const r of rows.filter(r => r.role === 'assistant_class')) {
-    const [u] = await db.select().from(users).where(eq(users.email as any, r.email));
+    const email = cleanEmail(r.email);
+    if (!email) continue;
+    const [u] = await db.select().from(users).where(eq(users.email as any, email));
     if (!u) continue;
     // 检查是否已有相同授权
     const existing = await db.select().from(userRoleGrants)
@@ -136,7 +150,9 @@ async function assignStudents(rows: WhitelistRow[]) {
   }
 
   for (const s of students) {
-    const [u] = await db.select().from(users).where(eq(users.email as any, s.email));
+    const email = cleanEmail(s.email);
+    if (!email) continue;
+    const [u] = await db.select().from(users).where(eq(users.email as any, email));
     if (!u) continue;
     summary.matchedUsers += 1;
 

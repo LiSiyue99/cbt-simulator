@@ -21,7 +21,12 @@ export async function buildServer() {
   });
 
   await app.register(cors, { origin: true });
-  await app.register(rateLimit, { max: 60, timeWindow: '1 minute' });
+  await app.register(rateLimit, {
+    // 提高默认限流，满足约114人的并发访问
+    max: Number(process.env.RATELIMIT_MAX || 300),
+    timeWindow: process.env.RATELIMIT_WINDOW || '1 minute',
+    hook: 'preHandler',
+  });
   await app.register(authPlugin);
 
   await registerSessionRoutes(app);

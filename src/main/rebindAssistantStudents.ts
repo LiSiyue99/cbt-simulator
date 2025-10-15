@@ -22,7 +22,13 @@ import { eq, inArray } from 'drizzle-orm';
  */
 
 function normalizeKey(v: any): string | null { const m = String(v ?? '').trim().match(/(\d{1,2})/); return m ? String(Number(m[1])) : null; }
-function cleanEmail(e: string): string { return (e||'').replace(/[\u2000-\u200B\u3000]/g,'').trim().toLowerCase(); }
+function cleanEmail(e: string): string {
+  return (e || '')
+    .replace(/[\u2000-\u200B\u3000]/g, '') // 零宽/全角空白
+    .replace(/\s+/g, '') // 去除普通空格（避免邮箱中间混入空格）
+    .trim()
+    .toLowerCase();
+}
 
 async function readCsv(filePath: string): Promise<any[]> {
   const content = fs.readFileSync(filePath, 'utf8');

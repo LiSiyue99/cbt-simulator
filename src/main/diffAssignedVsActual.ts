@@ -6,7 +6,13 @@ import { createDb } from '../db/client';
 import { users, visitorInstances, visitorTemplates } from '../db/schema';
 import { eq } from 'drizzle-orm';
 
-function cleanEmail(e: string): string { return (e||'').replace(/[\u2000-\u200B\u3000]/g,'').trim().toLowerCase(); }
+function cleanEmail(e: string): string {
+  return (e || '')
+    .replace(/[\u2000-\u200B\u3000]/g, '')
+    .replace(/\s+/g, '')
+    .trim()
+    .toLowerCase();
+}
 function normKey(v: any): string | null { const m = String(v||'').trim().match(/(\d{1,2})/); return m ? String(Number(m[1])) : null; }
 
 async function readCsv(filePath: string): Promise<any[]> {

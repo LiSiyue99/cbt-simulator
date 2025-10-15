@@ -289,6 +289,13 @@ export async function registerSessionRoutes(app: FastifyInstance) {
         },
       },
     },
+    config: {
+      rateLimit: {
+        max: Number(process.env.RATELIMIT_CHAT_MESSAGE_MAX || 12),
+        timeWindow: process.env.RATELIMIT_CHAT_MESSAGE_WINDOW || '1 minute',
+        keyGenerator: (req: any) => (req?.auth?.userId) || req.ip,
+      }
+    }
   }, async (req, reply) => {
     const { sessionId } = req.params as any;
     const { speaker, content } = req.body as any;

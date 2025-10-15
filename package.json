@@ -42,16 +42,17 @@
     "@fastify/cors": "^10.1.0",
     "@fastify/rate-limit": "^10.3.0",
     "@paralleldrive/cuid2": "^2.2.2",
+    "csv-parse": "^5.5.6",
     "dotenv": "^17.2.2",
     "drizzle-orm": "^0.44.5",
     "fastify": "^5.6.1",
     "jose": "^5.3.0",
-    "csv-parse": "^5.5.6",
     "openai": "^5.22.0",
     "pg": "^8.16.3"
   },
   "devDependencies": {
     "@types/node": "^22.18.6",
+    "@types/pg": "^8.15.5",
     "drizzle-kit": "^0.31.4",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"

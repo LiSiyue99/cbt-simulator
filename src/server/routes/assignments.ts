@@ -129,6 +129,13 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
         },
       },
     },
+    config: {
+      rateLimit: {
+        max: Number(process.env.RATELIMIT_HOMEWORK_SUBMIT_MAX || 4),
+        timeWindow: process.env.RATELIMIT_HOMEWORK_SUBMIT_WINDOW || '1 minute',
+        keyGenerator: (req: any) => (req?.auth?.userId) || req.ip,
+      }
+    }
   }, async (req, reply) => {
     const db = createDb();
     const payload = (req as any).auth;
