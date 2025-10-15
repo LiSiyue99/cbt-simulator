@@ -1,3 +1,173 @@
+Background and Motivation
+
+本次需求将“作业（三联/五联/任意表格）”从固定三联表升级为“按班级发包的动态表单作业”，并与会话序号严格对齐：该班第 N 次作业 = 每位学生的第 N 次 session。管理员在 Admin 端新增“作业发布与管理”分区，按班发布作业集（Homework Set），配置表单字段与窗口期；学生在管理员允许的窗口内提交；技术助教在管理员允许的窗口内通过既有“助教-学生聊天”完成批改（无需新增评分页面）。旧“三联表”接口与数据表将被移除，前后端统一迁移到新通用作业机制。
+
+Key Challenges and Analysis
+
+- 映射关系：作业集需与每个班的 sessionNumber 严格对齐（sequenceNumber）。学生 session 的编号仍按“完成的最大编号+1”规则，作业集以 sequenceNumber 标识第几次作业。
+- 动态表单：字段支持类型足够通用且简单（全部必填、无需最小长度/选项集），需支持字段的“提示说明/占位文本”。
+- 窗口期：与全局“开窗/封窗”策略（timeWindow）解耦，作业集自身具备 studentStartAt/studentDeadline 与 assistantStartAt/assistantDeadline。管理员可直接修改该作业集的 DDL（等价于对该 package 进行时间修改）。
+- 批改模型：延续“助教与学生的聊天”作为批改载体，不新增评分/打分 UI。待批改判定逻辑需从“三联表后无助教回复”迁移为“该次作业有提交后，无助教在提交时间之后的聊天”。
+- 兼容性改造：彻底移除 `thought_records` 表与相关接口、统计和页面；将所有统计（作业已交、待批改）切换为基于新通用提交。
+- 行政助教统计：若现有按班/按周的合规统计未覆盖作业与助教批改，需要补齐“完成率/未交/已批改率/逾期分析”等。
+
+High-level Task Breakdown
+
+1) 数据库与迁移（移除三联表、引入作业集与提交）
+   - 成功标准：存在 `homework_sets` 与 `homework_submissions` 两张新表；`thought_records` 被移除；DDL/索引齐备。
+
+2) Admin 后端接口：作业集 CRUD 与 DDL 时间编辑
+   - 成功标准：管理员可创建/查询/更新/删除作业集；可随时编辑该 package 的 student/assistant 窗口；带简单权限校验与审计日志。
+
+3) Student 后端接口：提交与查询（按 session ←→ sequenceNumber 映射）
+   - 成功标准：在窗口内允许提交动态表单；重复提交策略按“覆盖/单次”之一（初版按单次+可更新）；可按 sessionId 读取自己的提交。
+
+4) Assistant 后端接口与统计：待批改列表/仪表替换逻辑
+   - 成功标准：`/assistant/pending-*` 改为基于提交时间与助教聊天的“无回复”判定；仪表盘统计用新数据源。
+
+5) Sessions/Assignments 列表统计替换
+   - 成功标准：原 `thoughtRecordCount/hasThoughtRecord` 替换为 `hasSubmission/submissionCount`，返回字段与前端对齐。
+
+6) AssistantClass（行政）统计补齐
+   - 成功标准：合规/进度接口包含“作业完成/已批改”维度；可按班/按周聚合；前端页面正确展示。
+
+7) 前端 Services：替换三联表 API 为通用作业 API
+   - 成功标准：新增 `homeworkSets.ts/homeworkSubmissions.ts`；移除 `thoughtRecords.ts`；`assignments.ts` 统计字段同步。
+
+8) 前端页面：`dashboard/assignments` 动态表单渲染与窗口状态
+   - 成功标准：在开放期展示“去填写”，过期显示“已截止”；渲染管理员设置的字段（全部必填，有占位/说明）；保留既有助教聊天区。
+
+9) 文档同步：`docs/api.md` 与 `web/FRONTEND_API.md`
+   - 成功标准：新增/变更端点完整、示例准确，删除旧三联表端点。
+
+10) 测试（TDD）：发包→提交→助教聊天→统计链路
+   - 成功标准：核心用例全绿；覆盖窗口校验、映射校验、待批改判定、统计口径。
+
+Design Details
+
+1. 数据模型（Drizzle）
+
+- homework_sets
+  - id (text, PK)
+  - classId (bigint, not null) 关联 `users.classId` 的班级编号
+  - title (varchar)
+  - description (text)
+  - sequenceNumber (integer, not null) 该班第几次作业（与 sessionNumber 对齐）
+  - formFields (jsonb) 数组，元素结构见下
+  - studentStartAt (timestamp, not null)
+  - studentDeadline (timestamp, not null)
+  - assistantStartAt (timestamp, not null)
+  - assistantDeadline (timestamp, not null)
+  - status (varchar: draft|published|archived) 初版可选
+  - createdBy (text, FK users.id)
+  - createdAt/updatedAt (timestamp)
+  - 索引：classId+sequenceNumber 唯一；按 classId 检索；起止时间查询
+
+- formFields.item 结构（全部必填，无最小长度/选项集，支持提示/占位）：
+  - key: string（存储键）
+  - label: string（表头/字段名）
+  - type: "text" | "textarea" | "number" | "date" | "boolean"（初版足够覆盖常见场景；后续可扩展）
+  - placeholder?: string
+  - helpText?: string
+
+- homework_submissions
+  - id (text, PK)
+  - homeworkSetId (text, FK homework_sets.id, onDelete:cascade)
+  - sessionId (text, FK sessions.id, onDelete:cascade)
+  - studentId (text, FK users.id, onDelete:cascade)
+  - formData (jsonb) 记录 { [key]: string|number|boolean|ISODateString }
+  - createdAt/updatedAt (timestamp)
+  - 索引：sessionId 唯一（每次作业一次提交）；homeworkSetId；studentId
+
+- 删除 thought_records：去除所有引用处。
+
+2. 后端接口（拟）
+
+- Admin（新增）
+  - POST /admin/homework/sets
+  - GET  /admin/homework/sets?classId=&sequenceNumber?
+  - GET  /admin/homework/sets/:id
+  - PUT  /admin/homework/sets/:id（允许修改 student/assistant 窗口；等价于对 package 的 DDL 调整）
+  - DELETE /admin/homework/sets/:id
+
+- Student（新增）
+  - GET  /homework/sets/by-session?sessionId=... → 返回匹配该学生班级、sequence=该 sessionNumber 的作业集（含窗口与字段）
+  - POST /homework/submissions { sessionId, homeworkSetId, formData }
+  - GET  /homework/submissions?sessionId=... → { item|null }
+  - 窗口校验：studentStartAt ≤ now ≤ studentDeadline 方可创建/更新
+
+- Assistant（改造）
+  - GET /assistant/pending-homework → 返回“有提交但提交后无助教消息”的会话清单（替代 pending-thought-records）
+  - 其它聊天接口保持不变
+
+- Sessions/Assignments（改造）
+  - GET /assignments/list：返回每个 session 的 submissionCount/chatCount 等（用 submissions 取代 thought_records）
+  - GET /sessions/list：hasSubmission 替换 hasThoughtRecord
+
+- AssistantClass（行政）（改造/补齐）
+  - 在既有 `compliance/progress-by-session` 输出中加入 per-session 的 hasSubmission/hasAssistantReplyAfterSubmission 字段与统计。
+
+3. 行为与判定
+
+- 作业与 session 对齐：取学生 `users.classId`，在 `homework_sets` 中查找该班 `sequenceNumber = session.sessionNumber` 的作业集。
+- 待批改判定：若 `homework_submissions` 存在，且在 `assistant_chat_messages` 中不存在提交时间之后的助教消息 → 计为待批改。
+- 逾期：now > studentDeadline 且无提交；或 now > assistantDeadline 且仍无助教回复。
+
+4. 前端改造
+
+- Services
+  - 新增：`web/src/services/api/homeworkSets.ts`、`homeworkSubmissions.ts`
+  - 改造：`assignments.ts` 的返回字段（submissionCount / hasSubmission）
+  - 移除：`thoughtRecords.ts`
+
+- 页面 `web/src/app/dashboard/assignments/page.tsx`
+  - 左侧 session 列表：以 hasSubmission 取代 thoughtRecordCount；仍显示 chatCount。
+  - 右侧：根据 `by-session` 返回的 formFields 动态渲染（全部必填）；窗口内显示“提交”按钮，否则只读/禁用并显示“已截止”。
+  - 下方“助教互动”聊天区：保留现有实现。
+
+5. 文档与测试
+
+- 文档：更新 `docs/api.md` 与 `web/FRONTEND_API.md`，删除 `/thought-records*` 相关。
+- 测试：
+  - Admin 创建作业集（指定班级与 sequenceNumber）
+  - 学生完成 N 次会话后，提交 N 次作业（窗口内成功，窗口外失败）
+  - 助教聊天在提交后发送 → 待批改清单减少
+  - 行政统计：完成率/已批改率正确
+
+Project Status Board
+
+- [ ] 更新数据库：移除 thought_records，新增 homework_sets/homework_submissions 表
+- [ ] 后端Admin：新增作业集CRUD与DDL窗口接口
+- [ ] 后端Student：新增提交与查询接口（按 session 映射 set）
+- [x] 后端Assistant：替换“待批改三联表”为“待批改作业提交”，保留聊天（新增 `/assistant/homework/submission`、`/assistant/homework/detail`）
+- [ ] 后端Sessions/Assignments：用作业提交统计替换 hasThoughtRecord/计数
+- [ ] 后端AssistantClass：合规/进度统计改为基于作业提交与助教聊天
+- [ ] 前端Services：移除 thoughtRecords.ts，新增 homeworkSets.ts/homeworkSubmissions.ts
+- [ ] 前端页面：重写 dashboard/assignments 为动态表单渲染与窗口状态
+- [x] 文档：更新 docs/api.md 与 FRONTEND_API.md（替换三联表端点，补充助教作业接口）
+- [ ] 数据与脚本：清理seed/refreshCompliance为新模型，更新统计口径
+- [ ] 测试：新增TDD用例覆盖发包→提交→助教聊天→统计链路
+
+Current Status / Progress Tracking
+
+- 模式：Executor 正在实施。
+- 已完成：
+  - 后端助教端作业接口：`/assistant/homework/submission`、`/assistant/homework/detail`。
+  - 文档同步：`docs/api.md`、`web/FRONTEND_API.md`。
+  - 前端 services：新增 `getHomeworkSubmission/getHomeworkDetail`。
+- 进行中：
+  - 将新接口接入助教 UI（`tech-assistant-overview` 跳转至学生详情，学生详情页渲染作业字段+提交值）。
+
+Executor's Feedback or Assistance Requests
+
+- 字段类型初版拟定为：text/textarea/number/date/boolean（全部必填，无选项集）。是否需要文件上传/图片（若需要，需补充上传存储策略）？若暂不需要，将按上述五类落地。
+- 逾期策略默认仅用于统计与提示，不阻断助教聊天；如需阻断或灰显入口，请明确。
+- 前端助教“学生详情”页面中，是否需要显示“作业集窗口期（studentStartAt/studentDeadline）”与“助教反馈窗口（assistantDeadline）”？目前计划在详情卡片中一并显示。
+
+Lessons
+
+- 现有后端/前端多处直接引用 `thought_records`（计数/待批改/页面表单），迁移需一次性替换，避免双轨并存导致统计口径不一致。
+
 # CBT Simulator – 可用性与并发提升工作台
 
 ## Background and Motivation
@@ -341,3 +511,53 @@ Executor's Feedback or Assistance Requests (Frontend)
 Lessons (Frontend)
 - 前后端角色字符串必须完全一致，避免隐藏的 403。
 - 以 `visitorInstanceId` 作为学生数据入口，需在登录后第一时间拿到。
+
+## Planner – 人员分配纠偏（基于 CSV 校准）
+
+Background and Motivation
+- 发现 CSV 与系统中“助教负责学生名单”出现错位与扭曲（distortion）。你已修正 CSV（`assigned-output.csv`）。
+- 目标：以数据库为准，依据 CSV 的以下两类字段重新校准：
+  - 学生（role=student）：按 `assignedVisitor` 的编号（1..10）确保各学生存在且仅存在对应模板的 `visitor_instances`。
+  - 技术助教（role=assistant_tech）：按 `inchargeVisitor` 的编号集合（可能多项）确保白名单与运行时权限范围一致；并据此生成/纠正 `assistant_students` 绑定，使每位学生绑定到其 `assignedTechAsst` 指定的助教。
+
+Key Challenges and Analysis
+- 历史脏数据：可能存在错误的 `visitor_instances`（模板错位/多余实例）与 `assistant_students` 绑定（错误助教/缺少绑定/重复绑定）。
+- 容错输入：CSV 中 `assignedTechAsst` 可能是邮箱或工号；`inchargeVisitor` 为 JSON 字符串（已在导入脚本中 parse）。
+- 幂等与安全：纠偏需可重复执行，保持幂等；对将被删除的绑定和实例要谨慎，避免误删有效数据。
+
+High-level Task Breakdown（本轮最小化变更）
+1) 对齐 whitelist（已由 importWhitelist.ts 完成）
+   - 成功标准：`whitelist_emails` 的 `assignedVisitor`、`inchargeVisitor`、`assignedTechAsst`、`status` 与 CSV 一致。
+2) 学生实例纠偏（按 student.assignedVisitor）
+   - 为每个学生：
+     - 若不存在对应模板实例 → 创建（`visitor_instances`）。
+     - 若存在多个实例或模板不符 → 保留目标模板实例，其他模板的实例暂不删除，仅记录告警（保守策略）。
+   - 成功标准：每个学生至少有且仅有一个“目标模板实例”；多余实例仅记录，不做物理删除（首轮保守）。
+3) 助教绑定纠偏（按 assignedTechAsst）
+   - 将学生的“目标模板实例”与其 `assignedTechAsst`（可为邮箱或工号）建立唯一绑定（`assistant_students` 上三唯一约束）。
+   - 若存在错误绑定（绑定至错误助教或错误实例）→ 新增正确绑定；错误绑定暂不删除（保守），记录在报告中。
+   - 成功标准：每个学生对其目标实例存在至少一个正确的绑定；无重复插入。
+4) 技术助教权限范围对齐（inchargeVisitor）
+   - 校验技术助教白名单的 `inchargeVisitor` 是否包含其学生所用模板；若不包含，输出告警清单，供后续修订 CSV 或白名单条目（不在本脚本自动改写，以免越权）。
+5) 校验与报告
+   - 输出：
+     - 新创建实例数、新增绑定数
+     - 发现的“多余实例”与“错误绑定”列表（仅记录，不删除）
+     - 助教模板权限不一致列表（学生模板不在 inchargeVisitor 中）
+
+Success Criteria
+- 运行后，任意学生的 `currentVisitor`（首个实例）与 CSV 的 `assignedVisitor` 一致；`/me` 返回的 `assignedVisitorTemplates` 对技术助教可正确反映 `inchargeVisitor`。
+- 管理端 `GET /admin/assignments/students` 可看到每个学生存在目标模板实例且至少有一个正确助教绑定。
+- 未进行物理删除，风险最小；若需要进一步清理，将另起迭代并有单独审批。
+
+Execution Plan
+- 新增 `src/main/reconcileAssignments.ts`：
+  - 读取 CSV（路径参数），解析为记录集。
+  - 对每个学生：确保目标实例存在并记录多余实例；按 `assignedTechAsst` 建立正确绑定。
+  - 对每个技术助教：读取其 `inchargeVisitor`，比对学生实际模板，记录不一致。
+  - 打印校验报告（JSON/表格）。
+- 仅在用户批准后执行脚本；执行前先 `npm audit`（如有漏洞警告），且绝不使用 `git push -f`/`--force`。
+
+Risks
+- CSV 若仍存在个别脏字段（邮箱拼写、工号对不齐）会导致“找不到助教用户”；将记录在报告中，需人工修正 CSV 或补录用户信息。
+- 历史多实例/多绑定未删除，可能在个别页面显示重复或统计偏高；本轮仅定位和报告，留待后续清理策略审批后处理。

@@ -2,8 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { createSession, createSessionAuto, appendChatTurn } from '../../services/sessionCrud';
 import { finalizeSessionById, prepareNewSession } from '../../services/sessionPipeline';
 import { createDb } from '../../db/client';
-import { sessions, visitorInstances, visitorTemplates, thoughtRecords, longTermMemoryVersions, assistantStudents } from '../../db/schema';
-import { eq, desc, sql } from 'drizzle-orm';
+import { sessions, visitorInstances, visitorTemplates, longTermMemoryVersions, assistantStudents, homeworkSubmissions, users, homeworkSets } from '../../db/schema';
+import { eq, desc, sql, and } from 'drizzle-orm';
 import { getBeijingNow, formatWeekKey, getStudentDeadline, getWeeklyOverrideUntil, getStudentOpenTime, getConfiguredStudentOpenTime } from '../../policy/timeWindow';
 import { chatWithVisitor, type FullPersona, type ChatTurn } from '../../chat/sessionOrchestrator';
 
@@ -94,6 +94,31 @@ export async function registerSessionRoutes(app: FastifyInstance) {
     const nextNumber = ((rowsCompleted as any[])[0]?.n ?? 0) + 1;
 
     const useNumber = typeof sessionNumber === 'number' ? Number(sessionNumber) : nextNumber;
+
+    // Package（homework_sets）一致性校验：学生只能在“有对应包且窗口开放”的情况下开始第 N 次会话
+    try {
+      const payload = (req as any).auth;
+      const isStudentOrHasStudentRole = payload && (payload.role === 'student' || (Array.isArray((payload as any).roles) && (payload as any).roles.includes('student')));
+      if (isStudentOrHasStudentRole) {
+        const dbCheck = createDb();
+        const [instRow] = await dbCheck.select().from(visitorInstances).where(eq(visitorInstances.id as any, visitorInstanceId));
+        if (!instRow) return reply.status(404).send({ error: 'visitor_instance_not_found' });
+        const [uRow] = await dbCheck.select({ classId: users.classId }).from(users).where(eq(users.id as any, (instRow as any).userId));
+        const clsId = (uRow as any)?.classId;
+        if (clsId) {
+          const [pkg] = await dbCheck.select().from(homeworkSets).where(and(eq(homeworkSets.classId as any, clsId), eq(homeworkSets.sequenceNumber as any, useNumber)));
+          if (!pkg) {
+            return reply.status(403).send({ error: 'forbidden', code: 'package_missing', message: '未配置本班第N次作业包，暂不可开始该轮对话' });
+          }
+          const now = new Date();
+          const startAt = (pkg as any).studentStartAt as Date;
+          const deadline = (pkg as any).studentDeadline as Date;
+          if (!(now >= startAt && now <= deadline)) {
+            return reply.status(403).send({ error: 'forbidden', code: 'package_window_closed', message: '当前作业包窗口未开放', startAt, deadline });
+          }
+        }
+      }
+    } catch {}
     if (auto !== false) {
       const id = await createSession({ visitorInstanceId, sessionNumber: useNumber });
       return reply.send({ sessionId: id, sessionNumber: useNumber });
@@ -157,11 +182,11 @@ export async function registerSessionRoutes(app: FastifyInstance) {
     const items = await Promise.all(rows.map(async (r) => {
       const messageCount = Number((r as any).msgCount || 0);
 
-      // Check for thought records
-      const thoughtRecordsResult = await db
-        .select({ id: thoughtRecords.id })
-        .from(thoughtRecords)
-        .where(eq(thoughtRecords.sessionId as any, r.id));
+      // Check for homework submissions
+      const submissionRows = await db
+        .select({ id: homeworkSubmissions.id })
+        .from(homeworkSubmissions)
+        .where(eq(homeworkSubmissions.sessionId as any, r.id));
       let lastMessage = null;
       if (includePreview) {
         // 更安全：单条查询该会话 chat_history，并在应用层取最后一条
@@ -181,7 +206,7 @@ export async function registerSessionRoutes(app: FastifyInstance) {
         messageCount,
         hasDiary: !!r.diary,
         hasActivity: !!r.act,
-        hasThoughtRecord: thoughtRecordsResult.length > 0,
+        hasThoughtRecord: submissionRows.length > 0,
         ...(lastMessage && { lastMessage })
       };
     }));

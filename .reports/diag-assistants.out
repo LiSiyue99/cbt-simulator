@@ -1,0 +1,229 @@
+{
+  "assistants": [
+    {
+      "assistantEmail": "1293846803@qq.com",
+      "assistantId": "b02a0c99-f6ef-4518-bf1c-aa3acb2e7d68",
+      "bindingCount": 20,
+      "samples": [
+        {
+          "studentEmail": "2675445078@qq.com",
+          "templateKey": "6",
+          "visitorInstanceId": "fd94584d-9360-4dd6-91bf-e71f688a283b"
+        },
+        {
+          "studentEmail": "lyx01070422@163.com",
+          "templateKey": "7",
+          "visitorInstanceId": "ff8e3792-615b-44a7-865b-276883479f76"
+        },
+        {
+          "studentEmail": "1627082902@qq.com",
+          "templateKey": "6",
+          "visitorInstanceId": "4e3a4518-df2b-4e38-9657-6c2a580f8007"
+        },
+        {
+          "studentEmail": "2429241813@qq.com",
+          "templateKey": "6",
+          "visitorInstanceId": "98ecdb75-7e51-4175-8bf7-a820730a8c1b"
+        },
+        {
+          "studentEmail": "1610709705@qq.com",
+          "templateKey": "7",
+          "visitorInstanceId": "d1635466-dc8a-4926-bedd-0f534272b235"
+        }
+      ]
+    },
+    {
+      "assistantEmail": "1598303516@qq.com",
+      "assistantId": "22a2e1f8-c594-4718-bf7a-b5eebc262d0d",
+      "bindingCount": 13,
+      "samples": [
+        {
+          "studentEmail": "2019880029@qq.com",
+          "templateKey": "9",
+          "visitorInstanceId": "7f11952f-7666-4ed6-8e41-5af1f9975e37"
+        },
+        {
+          "studentEmail": "zky1069475627@163.com",
+          "templateKey": "9",
+          "visitorInstanceId": "6bbbafbc-5c8f-4518-9a3a-ca185302c005"
+        },
+        {
+          "studentEmail": "1776674009@qq.com",
+          "templateKey": "9",
+          "visitorInstanceId": "dab4acc0-ba07-460c-9c64-9e8187966282"
+        },
+        {
+          "studentEmail": "zhangqian4262@163.com",
+          "templateKey": "9",
+          "visitorInstanceId": "38eafbf2-97ab-4e8d-8d94-b8cfe8e2e060"
+        },
+        {
+          "studentEmail": "2591831499@qq.com",
+          "templateKey": "9",
+          "visitorInstanceId": "e40ebb6d-2e8d-42e3-b0a0-29f707c2e173"
+        }
+      ]
+    },
+    {
+      "assistantEmail": "543027261@qq.com",
+      "assistantId": "158ad383-8d09-406c-8b0b-5b7eb4bc6c43",
+      "bindingCount": 20,
+      "samples": [
+        {
+          "studentEmail": "yanghuihuir@163.com",
+          "templateKey": "8",
+          "visitorInstanceId": "666a6175-17eb-4e00-bb69-cf9fb8f1c8ff"
+        },
+        {
+          "studentEmail": "1360480993@qq.com",
+          "templateKey": "2",
+          "visitorInstanceId": "c2a5e362-d751-44d1-a4b1-721db59350b4"
+        },
+        {
+          "studentEmail": "2386559748@qq.com",
+          "templateKey": "8",
+          "visitorInstanceId": "0709e443-17f1-4d03-ba64-f39321f3fbc2"
+        },
+        {
+          "studentEmail": "3190442719@qq.com",
+          "templateKey": "2",
+          "visitorInstanceId": "39f98680-16df-42e4-a530-99ab17859e1d"
+        },
+        {
+          "studentEmail": "934917303@qq.com",
+          "templateKey": "2",
+          "visitorInstanceId": "5da90f97-6bc8-4718-aa55-6c182bd284c9"
+        }
+      ]
+    },
+    {
+      "assistantEmail": "15094796735@163.com",
+      "assistantId": "afa7467f-b8ee-488a-9673-5ca86424fd9b",
+      "bindingCount": 14,
+      "samples": [
+        {
+          "studentEmail": "2801694493@qq.com",
+          "templateKey": "1",
+          "visitorInstanceId": "0bf23ba3-0201-4a7e-821a-852976e1fe59"
+        },
+        {
+          "studentEmail": "863315389@qq.com",
+          "templateKey": "1",
+          "visitorInstanceId": "726fddae-8cad-4943-9d1b-93cc9f2b49f3"
+        },
+        {
+          "studentEmail": "nian258024@163.com",
+          "templateKey": "1",
+          "visitorInstanceId": "6a24beff-ee14-40f6-98a9-59848a1dd377"
+        },
+        {
+          "studentEmail": "18235023423@163.com",
+          "templateKey": "1",
+          "visitorInstanceId": "64ffffd7-f1eb-4cfb-a8fa-2307cbfdfe80"
+        },
+        {
+          "studentEmail": "799192113@qq.com",
+          "templateKey": "1",
+          "visitorInstanceId": "5b86ddfe-3c40-40cc-a3ef-d3bb025af7c7"
+        }
+      ]
+    },
+    {
+      "assistantEmail": "983743956@qq.com",
+      "assistantId": "eb8044ac-d346-4ad4-aceb-6f682f7de4a4",
+      "bindingCount": 20,
+      "samples": [
+        {
+          "studentEmail": "kelly_chen294@163.com",
+          "templateKey": "5",
+          "visitorInstanceId": "1eda7b97-c10f-452d-9a89-7e9a2645d9b9"
+        },
+        {
+          "studentEmail": "2622997808@qq.com",
+          "templateKey": "5",
+          "visitorInstanceId": "74ff1aed-e75a-4a80-949e-9559c8334e0a"
+        },
+        {
+          "studentEmail": "chrishou123@163.com",
+          "templateKey": "10",
+          "visitorInstanceId": "ceab432f-9b9b-44f2-a9fb-dd8593ddfefe"
+        },
+        {
+          "studentEmail": "1807203476@qq.com",
+          "templateKey": "10",
+          "visitorInstanceId": "9fc3a151-81ad-4f70-aa78-0baa5b877844"
+        },
+        {
+          "studentEmail": "1280968942@qq.com",
+          "templateKey": "5",
+          "visitorInstanceId": "069ec637-ec5c-4e0f-9578-0f871522573e"
+        }
+      ]
+    },
+    {
+      "assistantEmail": "lyubaozhen@163.com",
+      "assistantId": "fd08acb7-c6cb-40f0-ad13-ba285260d34b",
+      "bindingCount": 13,
+      "samples": [
+        {
+          "studentEmail": "lishidandd@163.com",
+          "templateKey": "3",
+          "visitorInstanceId": "257e6b80-1500-4f47-997c-01bf105e88b4"
+        },
+        {
+          "studentEmail": "2281497201@qq.com",
+          "templateKey": "3",
+          "visitorInstanceId": "50b6fcfc-0d1c-44a1-8cba-8611b3f92648"
+        },
+        {
+          "studentEmail": "2412850707@qq.com",
+          "templateKey": "3",
+          "visitorInstanceId": "d7633e20-e971-46bf-a272-5d40130f04d7"
+        },
+        {
+          "studentEmail": "2063182835@qq.com",
+          "templateKey": "3",
+          "visitorInstanceId": "66c9d533-2970-4ae3-ba90-6a59b027de42"
+        },
+        {
+          "studentEmail": "879126746@qq.com",
+          "templateKey": "3",
+          "visitorInstanceId": "4988b32f-dae1-4301-b876-6c0bf73de33b"
+        }
+      ]
+    },
+    {
+      "assistantEmail": "bluestone630@126.com",
+      "assistantId": "b60afae0-eeaa-40a1-8ddb-44c7cbb751ed",
+      "bindingCount": 14,
+      "samples": [
+        {
+          "studentEmail": "chenshuyin_gz@163.com",
+          "templateKey": "4",
+          "visitorInstanceId": "3f6944ef-49b8-4ffd-ab71-b6b363629867"
+        },
+        {
+          "studentEmail": "2565666215@qq.com",
+          "templateKey": "4",
+          "visitorInstanceId": "3eb3bd54-a82c-4a35-998a-9ec97e8b0ae6"
+        },
+        {
+          "studentEmail": "2394459367@qq.com",
+          "templateKey": "4",
+          "visitorInstanceId": "dad5008d-97b5-4a67-a07d-9c073e3de93f"
+        },
+        {
+          "studentEmail": "fengqin90924@163.com",
+          "templateKey": "4",
+          "visitorInstanceId": "97c7fa8c-4640-4d96-a1bb-049f6737d8fe"
+        },
+        {
+          "studentEmail": "1626750340@qq.com",
+          "templateKey": "4",
+          "visitorInstanceId": "2e6fd32d-a05d-40f6-bfbd-97a6b95d0899"
+        }
+      ]
+    }
+  ],
+  "totalAssistants": 7
+}

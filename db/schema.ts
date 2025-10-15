@@ -47,6 +47,18 @@ export type PreSessionActivity = {
   details?: unknown; // 保留弹性给模型输出
 };
 
+// 通用作业表单字段定义（全部必填，支持占位与说明）
+export type HomeworkFormField = {
+  key: string;
+  label: string;
+  type: "text" | "textarea" | "number" | "date" | "boolean";
+  placeholder?: string;
+  helpText?: string;
+};
+
+// 通用作业提交数据结构（日期以 ISO 字符串传输）
+export type HomeworkFormData = Record<string, string | number | boolean>;
+
 
 /**
  * =================================================================================
@@ -163,23 +175,50 @@ export const sessions = pgTable(
   }
 );
 
-// 三联表
-export const thoughtRecords = pgTable(
-  "thought_records",
+// 作业集（按班与第 N 次作业定义动态表单与窗口期）
+export const homeworkSets = pgTable(
+  "homework_sets",
   {
     id: text("id").primaryKey().$defaultFn(() => createId()),
-    sessionId: text("session_id")
-      .notNull()
-      .references(() => sessions.id, { onDelete: "cascade" }),
-    triggeringEvent: text("triggering_event").notNull(),
-    thoughtsAndBeliefs: text("thoughts_and_beliefs").notNull(),
-    consequences: text("consequences").notNull(),
+    classId: bigint("class_id", { mode: 'number' }).notNull(),
+    title: varchar("title", { length: 256 }),
+    description: text("description"),
+    sequenceNumber: integer("sequence_number").notNull(),
+    formFields: jsonb("form_fields").$type<HomeworkFormField[]>().notNull(),
+    studentStartAt: timestamp("student_start_at").notNull(),
+    studentDeadline: timestamp("student_deadline").notNull(),
+    assistantStartAt: timestamp("assistant_start_at").notNull(),
+    assistantDeadline: timestamp("assistant_deadline").notNull(),
+    status: varchar("status", { length: 32 }).notNull().default("published"),
+    createdBy: text("created_by").notNull().references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => {
     return {
-      idxSession: index("thought_records_session_idx").on(table.sessionId),
+      uqClassSeq: uniqueIndex("homework_sets_class_seq_uq").on(table.classId, table.sequenceNumber),
+      idxClass: index("homework_sets_class_idx").on(table.classId),
+    };
+  }
+);
+
+// 学生作业提交（与会话、作业集与学生关联）
+export const homeworkSubmissions = pgTable(
+  "homework_submissions",
+  {
+    id: text("id").primaryKey().$defaultFn(() => createId()),
+    homeworkSetId: text("homework_set_id").notNull().references(() => homeworkSets.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull().references(() => sessions.id, { onDelete: "cascade" }),
+    studentId: text("student_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    formData: jsonb("form_data").$type<HomeworkFormData>().notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => {
+    return {
+      uqSession: uniqueIndex("homework_submissions_session_uq").on(table.sessionId),
+      idxSet: index("homework_submissions_set_idx").on(table.homeworkSetId),
+      idxStudent: index("homework_submissions_student_idx").on(table.studentId),
     };
   }
 );
@@ -247,9 +286,7 @@ export const whitelistEmails = pgTable(
     role: varchar("role", { length: 32 }).notNull(), // student | assistant_tech | assistant_class | admin
     // 学生/行政助教：班级与学号（学生）
     classId: bigint("class_id", { mode: 'number' }),
-    // 学生预分配：技术助教 user_id / 行政助教 user_id / 模板（1..10）
-    assignedTechAsst: varchar("assigned_tech_asst", { length: 64 }),
-    assignedClassAsst: varchar("assigned_class_asst", { length: 64 }),
+    // 学生预分配：模板（1..10）
     assignedVisitor: varchar("assigned_visitor", { length: 8 }),
     // 技术助教负责模板集合与配额统计
     inchargeVisitor: jsonb("incharge_visitor"), // string[] 模板键数组
@@ -263,8 +300,6 @@ export const whitelistEmails = pgTable(
     return {
       uqUserId: uniqueIndex("whitelist_user_id_uq").on(table.userId),
       idxClassRole: index("whitelist_class_role_idx").on(table.classId, table.role),
-      idxAssignedTech: index("whitelist_assigned_tech_idx").on(table.assignedTechAsst),
-      idxAssignedClass: index("whitelist_assigned_class_idx").on(table.assignedClassAsst),
       idxAssignedVisitor: index("whitelist_assigned_visitor_idx").on(table.assignedVisitor),
       idxRoleStatus: index("whitelist_role_status_idx").on(table.role, table.status),
     };

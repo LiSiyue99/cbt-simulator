@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../../db/client';
-import { sessions, visitorInstances, assistantStudents, thoughtRecords, assistantChatMessages } from '../../db/schema';
+import { sessions, visitorInstances, assistantStudents, assistantChatMessages, homeworkSubmissions, users, homeworkSets } from '../../db/schema';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 
 export async function registerAssignmentRoutes(app: FastifyInstance) {
@@ -23,7 +23,10 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
     // - assistant/admin: 必须在 assistant_students 绑定内或为 admin
     if (!payload) return reply.status(401).send({ error: 'unauthorized' });
 
-    if (payload.role === 'student') {
+    const roles = (payload as any)?.roles || [];
+    const hasStudentRole = (payload as any).role === 'student' || (Array.isArray(roles) && roles.includes('student'));
+
+    if (hasStudentRole) {
       const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, visitorInstanceId));
       if (!inst || (inst as any).userId !== payload.userId) return reply.status(403).send({ error: 'forbidden' });
     } else if (payload.role === 'assistant_tech') {
@@ -32,6 +35,10 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
         .from(assistantStudents)
         .where(and(eq(assistantStudents.assistantId as any, payload.userId), eq(assistantStudents.visitorInstanceId as any, visitorInstanceId)));
       if (!bind) return reply.status(403).send({ error: 'forbidden' });
+    } else if (payload.role === 'assistant_class') {
+      // 行政助教兼学生：若该实例属于自己，也允许查看
+      const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, visitorInstanceId));
+      if (!inst || (inst as any).userId !== payload.userId) return reply.status(403).send({ error: 'forbidden' });
     } else if (payload.role === 'admin') {
       // allow
     } else {
@@ -46,15 +53,15 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
 
     // 聚合统计（避免 N+1）
     const sessionIds = (sessRows as any[]).map((r: any) => r.id);
-    let trCounts: Record<string, number> = {};
+    let submissionCounts: Record<string, number> = {};
     let chatCounts: Record<string, number> = {};
     if (sessionIds.length) {
-      const trRows = await db
-        .select({ sessionId: thoughtRecords.sessionId, cnt: sql`count(*)` })
-        .from(thoughtRecords)
-        .where(inArray(thoughtRecords.sessionId as any, sessionIds as any))
-        .groupBy(thoughtRecords.sessionId as any);
-      for (const r of trRows as any[]) trCounts[(r as any).sessionId] = Number((r as any).cnt || 0);
+      const subRows = await db
+        .select({ sessionId: homeworkSubmissions.sessionId, cnt: sql`count(*)` })
+        .from(homeworkSubmissions)
+        .where(inArray(homeworkSubmissions.sessionId as any, sessionIds as any))
+        .groupBy(homeworkSubmissions.sessionId as any);
+      for (const r of subRows as any[]) submissionCounts[(r as any).sessionId] = Number((r as any).cnt || 0);
 
       const chatRows = await db
         .select({ sessionId: assistantChatMessages.sessionId, cnt: sql`count(*)` })
@@ -69,11 +76,125 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
       sessionNumber: s.sessionNumber,
       createdAt: s.createdAt,
       homework: s.homework || [],
-      thoughtRecordCount: trCounts[s.id] || 0,
+      thoughtRecordCount: submissionCounts[s.id] || 0,
       chatCount: chatCounts[s.id] || 0,
     }));
 
     return reply.send({ items });
+  });
+
+  // 学生端：按 session 读取匹配的作业集（该班第N次作业）
+  app.get('/homework/sets/by-session', {
+    schema: {
+      querystring: {
+        type: 'object',
+        required: ['sessionId'],
+        properties: { sessionId: { type: 'string' } },
+      },
+    },
+  }, async (req, reply) => {
+    const db = createDb();
+    const payload = (req as any).auth;
+    const { sessionId } = req.query as any;
+    const [s] = await db.select().from(sessions).where(eq(sessions.id as any, sessionId));
+    if (!s) return reply.status(404).send({ error: 'session not found' });
+    const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, (s as any).visitorInstanceId));
+    if (!inst) return reply.status(404).send({ error: 'visitor instance not found' });
+    const [stu] = await db.select({ id: users.id, classId: users.classId }).from(users).where(eq(users.id as any, (inst as any).userId));
+    if (!stu) return reply.status(404).send({ error: 'student not found' });
+    // 授权：学生必须是 owner；助教需绑定；admin 放行
+    if (payload?.role === 'student' && payload.userId !== (inst as any).userId) return reply.status(403).send({ error: 'forbidden' });
+    if (payload?.role === 'assistant_tech') {
+      const [bind] = await db.select().from(assistantStudents).where(and(eq(assistantStudents.assistantId as any, payload.userId), eq(assistantStudents.visitorInstanceId as any, (inst as any).id)));
+      if (!bind) return reply.status(403).send({ error: 'forbidden' });
+    }
+
+    const [setRow] = await db.select().from(homeworkSets)
+      .where(and(eq(homeworkSets.classId as any, (stu as any).classId), eq(homeworkSets.sequenceNumber as any, (s as any).sessionNumber)))
+      .orderBy(desc(homeworkSets.updatedAt as any));
+    if (!setRow) return reply.send({ item: null });
+    return reply.send({ item: setRow });
+  });
+
+  // 学生端：提交或更新作业（窗口校验）
+  app.post('/homework/submissions', {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['sessionId','homeworkSetId','formData'],
+        properties: {
+          sessionId: { type: 'string' },
+          homeworkSetId: { type: 'string' },
+          formData: { type: 'object' },
+        },
+      },
+    },
+  }, async (req, reply) => {
+    const db = createDb();
+    const payload = (req as any).auth;
+    const { sessionId, homeworkSetId, formData } = (req.body || {}) as any;
+    // 拥有权校验
+    const [s] = await db.select().from(sessions).where(eq(sessions.id as any, sessionId));
+    if (!s) return reply.status(404).send({ error: 'session not found' });
+    const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, (s as any).visitorInstanceId));
+    if (!inst) return reply.status(404).send({ error: 'visitor instance not found' });
+    if (!payload || payload.role !== 'student' || payload.userId !== (inst as any).userId) return reply.status(403).send({ error: 'forbidden' });
+
+    // 匹配作业集并校验窗口
+    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, homeworkSetId));
+    if (!setRow) return reply.status(404).send({ error: 'homework_set_not_found' });
+    const now = new Date();
+    if (!(now >= (setRow as any).studentStartAt && now <= (setRow as any).studentDeadline)) {
+      return reply.status(403).send({ error: 'forbidden', code: 'student_window_closed' });
+    }
+
+    // 字段必填校验（所有字段均必填）
+    const fields = ((setRow as any).formFields || []) as any[];
+    for (const f of fields) {
+      if (!(f.key in (formData || {}))) return reply.status(400).send({ error: 'bad_request', message: `missing field ${f.key}` });
+      const v = (formData || {})[f.key];
+      if (v === null || v === undefined || (typeof v === 'string' && v.trim() === '')) {
+        return reply.status(400).send({ error: 'bad_request', message: `empty field ${f.key}` });
+      }
+    }
+
+    // 单次提交：若该 session 已存在提交，直接返回 409 冲突
+    const exists = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, sessionId));
+    const item = {
+      homeworkSetId,
+      sessionId,
+      studentId: (inst as any).userId,
+      formData,
+      updatedAt: new Date(),
+    } as any;
+    if ((exists as any[]).length) {
+      return reply.status(409).send({ error: 'conflict', code: 'submission_exists' });
+    }
+    const id = crypto.randomUUID();
+    await db.insert(homeworkSubmissions).values({ id, ...item, createdAt: new Date() } as any);
+    return reply.send({ ok: true, id, updated: false });
+  });
+
+  // 学生端：按 session 读取自己的提交
+  app.get('/homework/submissions', {
+    schema: {
+      querystring: {
+        type: 'object',
+        required: ['sessionId'],
+        properties: { sessionId: { type: 'string' } },
+      },
+    },
+  }, async (req, reply) => {
+    const db = createDb();
+    const payload = (req as any).auth;
+    const { sessionId } = (req.query || {}) as any;
+    const [s] = await db.select().from(sessions).where(eq(sessions.id as any, sessionId));
+    if (!s) return reply.status(404).send({ error: 'session not found' });
+    const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, (s as any).visitorInstanceId));
+    if (!inst) return reply.status(404).send({ error: 'visitor instance not found' });
+    if (!payload || payload.role !== 'student' || payload.userId !== (inst as any).userId) return reply.status(403).send({ error: 'forbidden' });
+    const [row] = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, sessionId));
+    return reply.send({ item: row || null });
   });
 
   // Dashboard 待办事项接口
@@ -90,8 +211,10 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
     const { visitorInstanceId } = req.query as any;
     const payload = (req as any).auth;
 
-    // 授权检查：只有学生可以访问自己的待办事项
-    if (!payload || payload.role !== 'student') {
+    // 授权检查：学生或“具备学生授权/行政助教（学生视角）”均可
+    const roles = (payload as any)?.roles || [];
+    const hasStudentRole = (payload as any)?.role === 'student' || (Array.isArray(roles) && roles.includes('student'));
+    if (!payload || (!hasStudentRole && (payload as any).role !== 'assistant_class')) {
       return reply.status(403).send({ error: 'forbidden' });
     }
 
@@ -141,10 +264,10 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
       });
     }
 
-    // 检查每个已完成会话的三联表填写情况
+    // 检查每个已完成会话的作业提交情况
     for (const session of completedSessions) {
       const sessionId = session.id;
-      const tr = await db.select().from(thoughtRecords).where(eq(thoughtRecords.sessionId as any, sessionId));
+      const tr = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, sessionId));
 
       if (tr.length === 0) {
         const dueDate = new Date(session.finalizedAt);
@@ -153,7 +276,7 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
         todos.push({
           id: `assignment-${sessionId}`,
           type: 'assignment',
-          title: `填写第${session.sessionNumber}次对话的三联表`,
+          title: `填写第${session.sessionNumber}次作业`,
           description: '分析对话中的情境、想法和情绪反应',
           completed: false,
           urgent: dueDate < now,

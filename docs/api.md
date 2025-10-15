@@ -215,10 +215,24 @@ GET `/visitor/template?visitorInstanceId=...`
 ```
 授权：学生（该实例 owner）、assistant_tech/assistant_class（与实例有绑定）、admin。
 
-## 三联表（Thought Records）
+## 作业发布与提交（动态表单）
 
-创建：POST `/thought-records`
-查询：GET `/thought-records?sessionId=...`
+Admin：
+- 创建作业集（发包）：POST `/admin/homework/sets`
+- 列表：GET `/admin/homework/sets?classId=&sequenceNumber?`
+- 详情：GET `/admin/homework/sets/{id}`
+- 更新（含DDL窗口与字段）：PUT `/admin/homework/sets/{id}`
+- 删除：DELETE `/admin/homework/sets/{id}`
+
+Student：
+- 按会话读取作业集：GET `/homework/sets/by-session?sessionId=...`
+- 提交作业（仅一次）：POST `/homework/submissions` → `{ ok, id }`
+- 若重复提交：返回 409 → `{ "error": "conflict", "code": "submission_exists" }`
+- 查询提交：GET `/homework/submissions?sessionId=...`
+
+说明：
+- “该班第 N 次作业 = 第 N 次 session”，作业窗口在作业集内按 studentStartAt/studentDeadline 控制。
+- 字段均为必填，类型支持 text/textarea/number/date/boolean（带占位与说明）。
 
 ---
 
@@ -231,7 +245,7 @@ GET `/visitor/template?visitorInstanceId=...`
 - 学生历史：GET `/assistant/students/{studentId}/history`
 - 仪表板统计：GET `/assistant/dashboard-stats`（返回 `unreadMessages`）
 - 未读消息会话：GET `/assistant/unread-message-sessions`
-- 待批改三联表：GET `/assistant/pending-thought-records`
+- 待批改作业：GET `/assistant/pending-thought-records`
 
 ### 助教-学生聊天（统一替代 questions/assistant_feedbacks）
 - 列表：GET `/assistant/chat?sessionId=...&page=1&pageSize=50` → `{ items, unreadCount, page, pageSize, total }`
@@ -240,9 +254,19 @@ GET `/visitor/template?visitorInstanceId=...`
 
 ---
 
-## 行政助教（assistant_class/admin）
+### 2) 行政助教（assistant_class/admin）
 - 本班学生：GET `/assistant-class/students`
 - 学生会话（只读）：GET `/assistant-class/students/{studentId}/sessions`
+- 作业包（package）列表：GET `/assistant-class/homework/sets` → `{ items: [{ id,title?,sequenceNumber,studentStartAt,assistantDeadline,status }] }`
+- 作业包进度：GET `/assistant-class/homework/sets/{id}/progress`
+  - 返回：`{ items: [{ studentId, name?, userId, sessionNumber, hasSubmission, sessionDurationMinutes, assistantFeedback }] }`
+  - 语义：
+    - `sessionDurationMinutes` 为该次会话的完成时长（分钟），按 `finalizedAt - createdAt` 计算；若未完成返回 `null`。
+    - `assistantFeedback` 为提交作业后，助教在会话聊天中给出的最新一条回复内容（若无则为 `null`）。
+
+- 作业包会话对话记录：GET `/assistant-class/homework/sets/{id}/feedback?studentId=...&page=1&pageSize=50`
+  - 返回：`{ items: [{ speaker: 'assistant'|'student', content, timestamp }], page, pageSize, total }`
+  - 说明：按时间升序分页返回该学生在该作业包对应会话里的双向消息，用于“查看对话”滑动窗口展示。
 
 ---
 
@@ -250,7 +274,7 @@ GET `/visitor/template?visitorInstanceId=...`
 - ensure：POST `/playground/ensure`
 - 列表：GET `/playground/instances`
 - 查看个人实例LTM与历史：GET `/playground/ltm?visitorInstanceId=...`
-- 权限：学生 `student` 角色被后端严格禁止访问任意 `/playground/*` 路由（返回 403）。
+- 权限：学生 `student` 角色被后端严格禁止访问任意 `/playground/*` 路由（返回 403）。仅行政助教用户在“工作概览”不请求学生待办接口。
 
 ---
 
@@ -376,5 +400,12 @@ POST `/admin/policy/ddl-override/batch`
 
 ## 备注（清理）
 - 旧接口 `/questions` 与 `/assistant/feedback` 已移除，请使用“助教-学生聊天”替代。
+- 助教作业查看：
+  - GET `/assistant/homework/submission?sessionId=...` → `{ item | null }`（仅返回提交）
+  - GET `/assistant/homework/detail?sessionId=...` → `{ session, set, submission, fields }`
+    - `session`: `{ sessionId, sessionNumber, createdAt }`
+    - `set`: 作业集定义（含 `formFields` 与窗口期）；若未配置返回 null
+    - `submission`: 学生提交；未提交返回 null
+    - `fields`: 将 `set.formFields` 与 `submission.formData` 合并后的数组，便于渲染（每项含 `key/label/type/placeholder/helpText/value`）
 
 

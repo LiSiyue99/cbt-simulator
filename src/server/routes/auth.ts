@@ -6,6 +6,9 @@ import { userRoleGrants } from '../../db/schema';
 import { eq, inArray, desc, isNull } from 'drizzle-orm';
 import { signJwt } from '../auth/jwt';
 
+// 新增导入 assistantStudents，用于从绑定推导负责助教
+import { assistantStudents } from '../../db/schema';
+
 function generateCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
@@ -91,6 +94,9 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     // 附加授权（多角色）
     const grants = await db.select().from(userRoleGrants).where(eq(userRoleGrants.userId as any, userId!));
     for (const g of grants as any[]) roles.add((g as any).role);
+    // 将 users 表中的当前主角色也合并进 JWT roles（用于识别具备 student 授权的行政助教）
+    const [userRowForRoles] = await db.select({ role: users.role }).from(users).where(eq(users.id as any, userId!));
+    if ((userRowForRoles as any)?.role) roles.add((userRowForRoles as any).role);
 
     // 班级作用域（仅 assistant_class 需要）
     const classScopes: Array<{ role: string; classId?: number }> = [];
@@ -118,7 +124,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     const [user] = await db.select().from(users).where(eq(users.id as any, payload.userId));
     if (!user) return reply.status(404).send({ error: 'user not found' });
 
-    // 获取白名单信息以获取 userId 和 assignedTechAsst
+    // 获取白名单信息以获取 userId（助教从绑定推导）
     const [whitelist] = await db.select().from(whitelistEmails).where(eq(whitelistEmails.email as any, payload.email));
 
     let visitorInstanceIds: string[] | undefined = undefined;
@@ -126,54 +132,93 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     let assignedTechAsst: any = undefined;
     let assignedVisitorTemplates: any[] | undefined = undefined;
 
-    // 学生角色：返回 visitorInstanceIds 和 currentVisitor 信息
-    if (payload.role === 'student') {
-      const instances = await db.select({
+    // 学生角色（支持多角色）：返回 visitorInstanceIds 和 currentVisitor 信息
+    const hasStudentRole = payload.role === 'student' || ((payload as any).roles || []).includes('student');
+    const treatAsStudent = hasStudentRole; // 仅当确有 student 授权时才以学生视角返回数据
+    if (treatAsStudent) {
+      let instances = await db.select({
         id: visitorInstances.id,
         templateId: visitorInstances.templateId,
       }).from(visitorInstances).where(eq(visitorInstances.userId as any, payload.userId));
 
-      visitorInstanceIds = instances.map(r => r.id as string);
-
-      // 获取第一个访客实例的详细信息作为当前访客
-      if (instances.length > 0) {
-        const firstInstance = instances[0];
-        const [template] = await db.select({
-          name: visitorTemplates.name,
-          templateKey: visitorTemplates.templateKey,
-        }).from(visitorTemplates).where(eq(visitorTemplates.id as any, firstInstance.templateId));
-
-        if (template) {
-          currentVisitor = {
-            instanceId: firstInstance.id,
-            name: template.name,
-            templateKey: template.templateKey
-          };
-        }
+      // 仅学生角色下，且当完全没有实例且白名单存在 assignedVisitor 时，创建该模板实例；否则不再向下兜底
+      if (!instances.length && hasStudentRole && (whitelist as any)?.assignedVisitor) {
+        try {
+          const key = String((whitelist as any).assignedVisitor);
+          const [tpl] = await db.select({ id: visitorTemplates.id }).from(visitorTemplates)
+            .where(eq(visitorTemplates.templateKey as any, key));
+          if (tpl) {
+            const id = crypto.randomUUID();
+            await db.insert(visitorInstances).values({
+              id,
+              userId: payload.userId,
+              templateId: (tpl as any).id,
+              longTermMemory: {
+                thisweek_focus: '',
+                discussed_topics: '',
+                milestones: '',
+                recurring_patterns: '',
+                core_belief_evolution: '',
+              } as any,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            } as any);
+            instances = [{ id, templateId: (tpl as any).id } as any];
+          }
+        } catch {}
       }
 
-      // 获取负责该学生的技术助教信息（兼容 assignedTechAsst 为邮箱或业务编号）
-      if (whitelist && (whitelist as any).assignedTechAsst) {
-        const at = String((whitelist as any).assignedTechAsst);
-        let techAsst: any | undefined;
-        if (at.includes('@')) {
-          const rows = await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.email as any, at));
-          techAsst = rows[0];
-        } else {
-          const rows = await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.userId as any, at));
-          techAsst = rows[0];
-          // 若按 userId 未找到，回退按 email 再试一次（容错）
-          if (!techAsst && at) {
-            const rows2 = await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.email as any, at));
-            techAsst = rows2[0];
+      // 计算绑定优先与 assignedVisitor 匹配优先的 currentVisitor，并按优先顺序输出 visitorInstanceIds
+      const instanceIds = instances.map(r => (r as any).id as string);
+      visitorInstanceIds = instanceIds;
+
+      // 获取学生→助教绑定（取第一条）
+      let boundInstanceId: string | null = null;
+      try {
+        const binds = await db.select().from(assistantStudents).where(eq(assistantStudents.studentId as any, payload.userId));
+        if ((binds as any[]).length) {
+          boundInstanceId = (binds[0] as any).visitorInstanceId as string;
+          const aid = (binds[0] as any).assistantId as string;
+          const rows = await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id as any, aid));
+          const techAsst = rows[0] as any;
+          if (techAsst) {
+            assignedTechAsst = { name: techAsst.name || (techAsst.email?.split('@')[0]), email: techAsst.email };
           }
         }
-        if (techAsst) {
-          assignedTechAsst = {
-            name: (techAsst as any).name || (techAsst as any).email?.split('@')[0],
-            email: (techAsst as any).email
-          };
+      } catch {}
+
+      // 准备模板映射以匹配 assignedVisitor
+      const tplIdSet = Array.from(new Set(instances.map(i => (i as any).templateId as string)));
+      let templateRows: Array<{ id: string; templateKey: string; name: string }> = [];
+      if (tplIdSet.length) {
+        const rows = await db.select({ id: visitorTemplates.id, templateKey: visitorTemplates.templateKey, name: visitorTemplates.name })
+          .from(visitorTemplates).where(inArray(visitorTemplates.id as any, tplIdSet as any));
+        templateRows = rows as any;
+      }
+      const templateKeyById = new Map<string, { key: string; name: string }>(templateRows.map(t => [(t as any).id, { key: (t as any).templateKey, name: (t as any).name }]));
+
+      const assignedKey = (whitelist as any)?.assignedVisitor ? String((whitelist as any).assignedVisitor) : null;
+      let assignedMatchInstanceId: string | null = null;
+      if (assignedKey) {
+        const match = instances.find(i => templateKeyById.get((i as any).templateId)?.key === assignedKey);
+        assignedMatchInstanceId = match ? (match as any).id : null;
+      }
+
+      // 选择 currentVisitor：优先绑定实例，其次 assignedVisitor 匹配实例
+      let chosenInstanceId: string | null = null;
+      if (boundInstanceId && instanceIds.includes(boundInstanceId)) chosenInstanceId = boundInstanceId;
+      else if (assignedMatchInstanceId) chosenInstanceId = assignedMatchInstanceId;
+
+      if (chosenInstanceId) {
+        // 将 chosen 放在 visitorInstanceIds 首位
+        visitorInstanceIds = [chosenInstanceId, ...instanceIds.filter(id => id !== chosenInstanceId)];
+        const chosen = instances.find(i => (i as any).id === chosenInstanceId)!;
+        const t = templateKeyById.get((chosen as any).templateId);
+        if (t) {
+          currentVisitor = { instanceId: chosenInstanceId, name: t.name, templateKey: t.key };
         }
+      } else {
+        // 若没有任何匹配，则不再向下兜底；保持 currentVisitor 为空
       }
     }
 

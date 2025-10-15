@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../../db/client';
-import { users, assistantStudents, sessions, thoughtRecords, visitorInstances, visitorTemplates, weeklyCompliance } from '../../db/schema';
-import { eq, desc } from 'drizzle-orm';
+import { users, assistantStudents, sessions, visitorInstances, visitorTemplates, weeklyCompliance, homeworkSubmissions, homeworkSets, assistantChatMessages } from '../../db/schema';
+import { eq, desc, and, inArray, asc } from 'drizzle-orm';
 import { computeClassWeekCompliance } from '../../services/compliance';
 
 export async function registerAssistantClassRoutes(app: FastifyInstance) {
@@ -158,19 +158,202 @@ export async function registerAssistantClassRoutes(app: FastifyInstance) {
         const target = byNumber.get(sn);
         hasSession = target ? 1 : 0;
         if (target) {
-          const tr = await db.select().from(thoughtRecords).where(eq(thoughtRecords.sessionId as any, (target as any).id));
-          hasThoughtRecord = (tr as any[]).length > 0 ? 1 : 0;
+          const sub = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, (target as any).id));
+          hasThoughtRecord = (sub as any[]).length > 0 ? 1 : 0;
         }
-        // 累计未完成：从 1..N，若缺会话或该会话无三联表计 1
+        // 累计未完成：从 1..N，若缺会话或该会话无作业提交计 1
         for (let i = 1; i <= sn; i++) {
           const si = byNumber.get(i);
           if (!si) { missCountUptoSession += 1; continue; }
-          const tri = await db.select().from(thoughtRecords).where(eq(thoughtRecords.sessionId as any, (si as any).id));
-          if (!(tri as any[]).length) missCountUptoSession += 1;
+          const subi = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, (si as any).id));
+          if (!(subi as any[]).length) missCountUptoSession += 1;
         }
       }
       items.push({ studentId: (stu as any).id, hasSession, hasThoughtRecord, missCountUptoSession });
     }
     return reply.send({ items });
+  });
+
+  // 行政助教：读取本班所有作业集（package）
+  app.get('/assistant-class/homework/sets', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['assistant_class', 'admin']);
+    const db = createDb();
+    const classIds: number[] = Array.isArray((payload as any).classScopes)
+      ? (payload as any).classScopes.filter((s: any) => s.role === 'assistant_class' && s.classId).map((s: any) => s.classId)
+      : (payload as any).classId ? [(payload as any).classId] : [];
+    const cid = classIds[0] || (payload as any).classId;
+    if (!cid) return reply.send({ items: [] });
+    const rows = await db.select().from(homeworkSets).where(eq(homeworkSets.classId as any, cid)).orderBy(desc(homeworkSets.sequenceNumber as any));
+    const items = (rows as any[]).map((r: any) => ({ id: r.id, title: r.title, description: r.description, sequenceNumber: r.sequenceNumber, studentStartAt: r.studentStartAt, studentDeadline: r.studentDeadline, assistantStartAt: r.assistantStartAt, assistantDeadline: r.assistantDeadline, status: r.status }));
+    return reply.send({ items });
+  });
+
+  // 行政助教：查看某个作业集在本班的完成与反馈进度
+  app.get('/assistant-class/homework/sets/:id/progress', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['assistant_class', 'admin']);
+    const db = createDb();
+    const { id } = req.params as any;
+    const classIds: number[] = Array.isArray((payload as any).classScopes)
+      ? (payload as any).classScopes.filter((s: any) => s.role === 'assistant_class' && s.classId).map((s: any) => s.classId)
+      : (payload as any).classId ? [(payload as any).classId] : [];
+    const cid = classIds[0] || (payload as any).classId;
+    if (!cid) return reply.send({ items: [] });
+
+    // 读取班级学生
+    const stuRows = await db.select().from(users).where(eq(users.classId as any, cid));
+    const students = (stuRows as any[]).filter(r => r.role === 'student');
+
+    // 找到该作业集的序号（与会话号对齐）
+    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
+    if (!setRow) return reply.status(404).send({ error: 'not_found' });
+    const sn = (setRow as any).sequenceNumber as number;
+
+    const items: any[] = [];
+    for (const stu of students as any[]) {
+      const vis = await db.select().from(visitorInstances).where(eq(visitorInstances.userId as any, (stu as any).id));
+      if (!(vis as any[]).length) {
+        items.push({
+          studentId: (stu as any).id,
+          name: (stu as any).name,
+          userId: (stu as any).userId,
+          sessionNumber: sn,
+          hasSubmission: 0,
+          sessionDurationMinutes: null,
+          assistantFeedback: null,
+        });
+        continue;
+      }
+      const inst = vis[0] as any;
+      const sessRows = await db.select().from(sessions).where(eq(sessions.visitorInstanceId as any, inst.id)).orderBy(desc(sessions.sessionNumber as any));
+      const byNum = new Map<number, any>();
+      for (const s of sessRows as any[]) byNum.set((s as any).sessionNumber, s);
+      const target = byNum.get(sn);
+      if (!target) {
+        items.push({
+          studentId: (stu as any).id,
+          name: (stu as any).name,
+          userId: (stu as any).userId,
+          sessionNumber: sn,
+          hasSubmission: 0,
+          sessionDurationMinutes: null,
+          assistantFeedback: null,
+        });
+        continue;
+      }
+      const [sub] = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, (target as any).id));
+      const hasSubmission = sub ? 1 : 0;
+
+      // 会话时长（分钟）：优先 finalizedAt - createdAt；若未完成则回退为 updatedAt - createdAt（近似）
+      let sessionDurationMinutes: number | null = null;
+      const createdAt = (target as any).createdAt ? new Date((target as any).createdAt).getTime() : null;
+      const finalizedAt = (target as any).finalizedAt ? new Date((target as any).finalizedAt).getTime() : null;
+      const updatedAt = (target as any).updatedAt ? new Date((target as any).updatedAt).getTime() : null;
+      if (createdAt && finalizedAt && finalizedAt >= createdAt) {
+        sessionDurationMinutes = Math.round((finalizedAt - createdAt) / 60000);
+      } else if (createdAt && updatedAt && updatedAt >= createdAt) {
+        sessionDurationMinutes = Math.round((updatedAt - createdAt) / 60000);
+      }
+
+      // 助教反馈内容：优先取“提交之后”的最新助教消息；若没有提交后消息，则回退为该会话中最新一条助教消息
+      let assistantFeedback: string | null = null;
+      const msgsDesc = await db
+        .select({ content: assistantChatMessages.content, createdAt: assistantChatMessages.createdAt })
+        .from(assistantChatMessages)
+        .where(and(
+          eq(assistantChatMessages.sessionId as any, (target as any).id),
+          eq(assistantChatMessages.senderRole as any, 'assistant_tech' as any),
+        ))
+        .orderBy(desc(assistantChatMessages.createdAt as any));
+      if (sub) {
+        for (const m of msgsDesc as any[]) {
+          if (new Date((m as any).createdAt) >= new Date((sub as any).createdAt)) {
+            assistantFeedback = (m as any).content as string;
+            break;
+          }
+        }
+      }
+      if (!assistantFeedback && (msgsDesc as any[]).length) {
+        assistantFeedback = (msgsDesc[0] as any).content as string;
+      }
+
+      items.push({
+        studentId: (stu as any).id,
+        name: (stu as any).name,
+        userId: (stu as any).userId,
+        sessionNumber: sn,
+        hasSubmission,
+        sessionDurationMinutes,
+        assistantFeedback,
+      });
+    }
+    return reply.send({ items });
+  });
+
+  // 行政助教：查看某作业包下，指定学生对应会话的聊天记录（分页）
+  app.get('/assistant-class/homework/sets/:id/feedback', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['assistant_class', 'admin']);
+    const db = createDb();
+    const { id } = req.params as any;
+    const { studentId, page = '1', pageSize = '50' } = (req.query || {}) as any;
+
+    if (!studentId) return reply.status(400).send({ error: 'bad_request', message: 'missing studentId' });
+
+    // 班级作用域校验
+    const classIds: number[] = Array.isArray((payload as any).classScopes)
+      ? (payload as any).classScopes.filter((s: any) => s.role === 'assistant_class' && s.classId).map((s: any) => s.classId)
+      : (payload as any).classId ? [(payload as any).classId] : [];
+    const cid = classIds[0] || (payload as any).classId;
+
+    // 作业包与学生合法性
+    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
+    if (!setRow) return reply.status(404).send({ error: 'not_found' });
+    if (cid && Number((setRow as any).classId) !== Number(cid)) {
+      // 限定仅本班可见
+      return reply.status(403).send({ error: 'forbidden' });
+    }
+    const [stu] = await db.select().from(users).where(eq(users.id as any, studentId));
+    if (!stu) return reply.status(404).send({ error: 'student_not_found' });
+    if (cid && Number((stu as any).classId) !== Number(cid)) return reply.status(403).send({ error: 'forbidden' });
+
+    // 找到该学生此序号的会话
+    const sn = (setRow as any).sequenceNumber as number;
+    const vis = await db.select().from(visitorInstances).where(eq(visitorInstances.userId as any, studentId));
+    if (!(vis as any[]).length) return reply.send({ items: [], page: Number(page), pageSize: Number(pageSize), total: 0 });
+    const inst = vis[0] as any;
+    const sessRows = await db.select().from(sessions).where(eq(sessions.visitorInstanceId as any, inst.id));
+    const target = (sessRows as any[]).find(r => (r as any).sessionNumber === sn);
+    if (!target) return reply.send({ items: [], page: Number(page), pageSize: Number(pageSize), total: 0 });
+
+    const p = Math.max(1, Number(page) || 1);
+    const ps = Math.min(200, Math.max(1, Number(pageSize) || 50));
+    const offset = (p - 1) * ps;
+
+    // 同时返回学生与助教消息，按时间升序分页
+    const rows = await db
+      .select({ content: assistantChatMessages.content, createdAt: assistantChatMessages.createdAt, senderRole: assistantChatMessages.senderRole })
+      .from(assistantChatMessages)
+      .where(eq(assistantChatMessages.sessionId as any, (target as any).id))
+      .orderBy(asc(assistantChatMessages.createdAt as any))
+      .limit(ps)
+      .offset(offset);
+
+    // 估算总数（轻量做法：再查一遍 count）
+    let total = rows.length;
+    try {
+      const all = await db.select({ createdAt: assistantChatMessages.createdAt }).from(assistantChatMessages)
+        .where(eq(assistantChatMessages.sessionId as any, (target as any).id));
+      total = (all as any[]).length;
+    } catch {}
+
+    return reply.send({
+      items: rows.map(r => ({
+        speaker: (r as any).senderRole === 'assistant_tech' ? 'assistant' : 'student',
+        content: (r as any).content,
+        timestamp: (r as any).createdAt,
+      })),
+      page: p,
+      pageSize: ps,
+      total,
+    });
   });
 }

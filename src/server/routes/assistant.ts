@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../../db/client';
-import { assistantStudents, users, sessions, longTermMemoryVersions, visitorInstances, thoughtRecords, visitorTemplates, whitelistEmails, assistantChatMessages } from '../../db/schema';
+import { assistantStudents, users, sessions, longTermMemoryVersions, visitorInstances, visitorTemplates, whitelistEmails, assistantChatMessages, homeworkSubmissions, homeworkSets } from '../../db/schema';
 import { eq, desc, and, sql, isNull, inArray } from 'drizzle-orm';
 
 export async function registerAssistantRoutes(app: FastifyInstance) {
@@ -36,7 +36,7 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
       ));
     const sessionsThisWeek = Number((sessionsThisWeekRows[0] as any)?.count || 0);
 
-    // 2) 三联表提交率
+    // 2) 作业提交率（以本周 finalized 的会话为基数）
     const finalizedRows = await db.select({ id: sessions.id })
       .from(sessions)
       .where(and(
@@ -46,8 +46,8 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
     const finalizedIds = (finalizedRows as any[]).map(r => r.id);
     let trSubmitRate = 0;
     if (finalizedIds.length > 0) {
-      const trRows = await db.select({ sessionId: thoughtRecords.sessionId }).from(thoughtRecords).where(inArray(thoughtRecords.sessionId as any, finalizedIds as any));
-      const submitted = new Set((trRows as any[]).map(r => r.sessionId)).size;
+      const subRows = await db.select({ sessionId: homeworkSubmissions.sessionId }).from(homeworkSubmissions).where(inArray(homeworkSubmissions.sessionId as any, finalizedIds as any));
+      const submitted = new Set((subRows as any[]).map(r => r.sessionId)).size;
       trSubmitRate = finalizedIds.length > 0 ? submitted / finalizedIds.length : 0;
     }
 
@@ -161,8 +161,8 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
     }
     const unreadByAssistant = Array.from(unreadByAssistantMap.entries()).map(([assistantId, count]) => ({ assistantId, assistantName: assistantNameById.get(assistantId) || '助教', count })).sort((a,b)=>b.count-a.count);
 
-    // pending by assistant（有TR但TR后无助教消息）
-    const trRows = await db.select({ sessionId: thoughtRecords.sessionId, createdAt: thoughtRecords.createdAt }).from(thoughtRecords);
+    // pending by assistant（有作业提交但其后无助教消息）
+    const trRows = await db.select({ sessionId: homeworkSubmissions.sessionId, createdAt: homeworkSubmissions.createdAt }).from(homeworkSubmissions);
     const trTimeBySession = new Map<string, Date>();
     for (const r of trRows as any[]) trTimeBySession.set((r as any).sessionId, new Date((r as any).createdAt));
     const assistantMsgs = await db.select({ sessionId: assistantChatMessages.sessionId, createdAt: assistantChatMessages.createdAt })
@@ -191,7 +191,7 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
     const UNREAD_THRESHOLD = 50;
     const PENDING_THRESHOLD = 10;
     if (unreadByAssistant[0] && unreadByAssistant[0].count >= UNREAD_THRESHOLD) alerts.push({ type: 'unread', message: `助教未读消息积压最高：${unreadByAssistant[0].assistantName} ${unreadByAssistant[0].count} 条` });
-    if (pendingByAssistant[0] && pendingByAssistant[0].count >= PENDING_THRESHOLD) alerts.push({ type: 'pending', message: `待批改三联表积压最高：${pendingByAssistant[0].assistantName} ${pendingByAssistant[0].count} 份` });
+    if (pendingByAssistant[0] && pendingByAssistant[0].count >= PENDING_THRESHOLD) alerts.push({ type: 'pending', message: `待批改作业积压最高：${pendingByAssistant[0].assistantName} ${pendingByAssistant[0].count} 份` });
 
     return reply.send({
       weekStart: weekStart.toISOString(),
@@ -415,10 +415,106 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
 
     const diary = (sessRows as any[]).filter(s => !!s.sessionDiary).map(s => ({ sessionNumber: s.sessionNumber, sessionId: s.id, createdAt: s.createdAt, sessionDiary: s.sessionDiary }));
     const activity = (sessRows as any[]).filter(s => !!s.preSessionActivity).map(s => ({ sessionNumber: s.sessionNumber, sessionId: s.id, createdAt: s.createdAt, preSessionActivity: s.preSessionActivity }));
-    const homework = (sessRows as any[]).filter(s => Array.isArray(s.homework) && s.homework?.length > 0).map(s => ({ sessionNumber: s.sessionNumber, sessionId: s.id, createdAt: s.createdAt, homework: s.homework }));
+
+    // 作业改为基于 homework_submissions（而非 sessions.homework）
+    const sessionIds = (sessRows as any[]).map(s => (s as any).id);
+    let homework: any[] = [];
+    if (sessionIds.length) {
+      const subs = await db.select({ sessionId: homeworkSubmissions.sessionId, createdAt: homeworkSubmissions.createdAt, formData: homeworkSubmissions.formData })
+        .from(homeworkSubmissions)
+        .where(inArray(homeworkSubmissions.sessionId as any, sessionIds as any));
+      const byId = new Map<string, any>((sessRows as any[]).map(s => [(s as any).id, s]));
+      homework = (subs as any[]).map((r:any) => {
+        const s = byId.get((r as any).sessionId);
+        return { sessionNumber: s?.sessionNumber, sessionId: r.sessionId, createdAt: r.createdAt, homework: (r as any).formData };
+      });
+    }
     const ltm = (ltmRows as any[]).map(r => ({ createdAt: r.createdAt, content: r.content }));
 
     return reply.send({ diary, activity, homework, ltm });
+  });
+
+  // 助教查看单次会话的作业提交（权限：需与该实例有绑定）
+  app.get('/assistant/homework/submission', {
+    schema: {
+      querystring: {
+        type: 'object',
+        required: ['sessionId'],
+        properties: { sessionId: { type: 'string' } },
+      },
+    },
+  }, async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['assistant_tech', 'admin']);
+    const db = createDb();
+    const { sessionId } = (req.query || {}) as any;
+    const [s] = await db.select().from(sessions).where(eq(sessions.id as any, sessionId));
+    if (!s) return reply.status(404).send({ error: 'session_not_found' });
+    if ((payload as any).role !== 'admin') {
+      const [bind] = await db.select().from(assistantStudents).where(and(eq(assistantStudents.assistantId as any, (payload as any).userId), eq(assistantStudents.visitorInstanceId as any, (s as any).visitorInstanceId)));
+      if (!bind) return reply.status(403).send({ error: 'forbidden' });
+    }
+    const [row] = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, sessionId));
+    return reply.send({ item: row || null });
+  });
+
+  // 助教查看单次会话的作业详情（提交 + 作业集字段），用于渲染三联/五联等动态表单
+  app.get('/assistant/homework/detail', {
+    schema: {
+      querystring: {
+        type: 'object',
+        required: ['sessionId'],
+        properties: { sessionId: { type: 'string' } },
+      },
+    },
+  }, async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['assistant_tech', 'admin']);
+    const db = createDb();
+    const { sessionId } = (req.query || {}) as any;
+
+    // 加载会话并做权限校验（助教需与该实例绑定；admin 放行）
+    const [s] = await db.select().from(sessions).where(eq(sessions.id as any, sessionId));
+    if (!s) return reply.status(404).send({ error: 'session_not_found' });
+    if ((payload as any).role !== 'admin') {
+      const [bind] = await db.select().from(assistantStudents).where(and(eq(assistantStudents.assistantId as any, (payload as any).userId), eq(assistantStudents.visitorInstanceId as any, (s as any).visitorInstanceId)));
+      if (!bind) return reply.status(403).send({ error: 'forbidden' });
+    }
+
+    // 取学生与班级，定位该 session 对应的作业集（按 班级+sessionNumber 映射）
+    const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, (s as any).visitorInstanceId));
+    if (!inst) return reply.status(404).send({ error: 'visitor_instance_not_found' });
+    const [stu] = await db.select({ id: users.id, classId: users.classId }).from(users).where(eq(users.id as any, (inst as any).userId));
+    if (!stu) return reply.status(404).send({ error: 'student_not_found' });
+
+    const [setRow] = await db.select().from(homeworkSets)
+      .where(and(
+        eq(homeworkSets.classId as any, (stu as any).classId),
+        eq(homeworkSets.sequenceNumber as any, (s as any).sessionNumber)
+      ))
+      .orderBy(desc(homeworkSets.updatedAt as any));
+
+    // 提交记录（若无则返回 null）
+    const [submission] = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, sessionId));
+
+    // 将字段与提交值对齐，便于前端直接渲染
+    const formFields = (setRow as any)?.formFields || [];
+    const formData = (submission as any)?.formData || {};
+    const mergedFields = Array.isArray(formFields)
+      ? formFields.map((f: any) => ({
+          key: f.key,
+          label: f.label,
+          type: f.type,
+          placeholder: f.placeholder,
+          helpText: f.helpText,
+          value: Object.prototype.hasOwnProperty.call(formData, f.key) ? formData[f.key] : undefined,
+        }))
+      : [];
+
+    return reply.send({
+      session: { sessionId: (s as any).id, sessionNumber: (s as any).sessionNumber, createdAt: (s as any).createdAt },
+      set: setRow || null,
+      submission: submission || null,
+      fields: mergedFields,
+    });
   });
 
   // 技术助教仪表板统计数据
@@ -472,35 +568,35 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
       });
     }
 
-    // 统计待批改的三联表：有三联表，但三联表之后尚无助教聊天回复
+    // 统计待批改的作业：有作业提交，但提交之后尚无助教聊天回复
     const completedSessions = (allSessions as any[]).filter((s) => s.finalizedAt);
     const completedSessionIds = completedSessions.map((s: any) => s.id);
     let pendingThoughtRecords = 0;
 
     if (completedSessionIds.length > 0) {
-      const trs = await db.select({ sessionId: thoughtRecords.sessionId, createdAt: thoughtRecords.createdAt })
-        .from(thoughtRecords)
-        .where(inArray(thoughtRecords.sessionId as any, completedSessionIds as any));
-      const trCreatedAtBySession = new Map<string, Date>();
-      for (const tr of trs as any[]) trCreatedAtBySession.set(tr.sessionId, new Date(tr.createdAt));
+      const subs = await db.select({ sessionId: homeworkSubmissions.sessionId, createdAt: homeworkSubmissions.createdAt })
+        .from(homeworkSubmissions)
+        .where(inArray(homeworkSubmissions.sessionId as any, completedSessionIds as any));
+      const subCreatedAtBySession = new Map<string, Date>();
+      for (const sub of subs as any[]) subCreatedAtBySession.set(sub.sessionId, new Date(sub.createdAt));
 
-      const sessionsWithTr = [...trCreatedAtBySession.keys()];
-      if (sessionsWithTr.length > 0) {
+      const sessionsWithSubmission = [...subCreatedAtBySession.keys()];
+      if (sessionsWithSubmission.length > 0) {
         const msgs = await db.select({ sessionId: assistantChatMessages.sessionId, createdAt: assistantChatMessages.createdAt, senderRole: assistantChatMessages.senderRole })
           .from(assistantChatMessages)
           .where(and(
-            inArray(assistantChatMessages.sessionId as any, sessionsWithTr as any),
+            inArray(assistantChatMessages.sessionId as any, sessionsWithSubmission as any),
             eq(assistantChatMessages.senderRole as any, 'assistant_tech' as any)
           ));
-        const hasReplyAfterTr = new Set<string>();
+        const hasReplyAfterSubmission = new Set<string>();
         for (const m of msgs as any[]) {
-          const trAt = trCreatedAtBySession.get(m.sessionId!);
-          if (!trAt) continue;
-          if (new Date(m.createdAt) >= trAt) {
-            hasReplyAfterTr.add(m.sessionId!);
+          const subAt = subCreatedAtBySession.get(m.sessionId!);
+          if (!subAt) continue;
+          if (new Date(m.createdAt) >= subAt) {
+            hasReplyAfterSubmission.add(m.sessionId!);
           }
         }
-        pendingThoughtRecords = sessionsWithTr.filter(id => !hasReplyAfterTr.has(id)).length;
+        pendingThoughtRecords = sessionsWithSubmission.filter(id => !hasReplyAfterSubmission.has(id)).length;
       } else {
         pendingThoughtRecords = 0;
       }
@@ -621,7 +717,7 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
     return reply.send({ items });
   });
 
-  // 待批改三联表列表：返回需批改的会话（有三联表但其后无助教回复）
+  // 待批改作业列表：返回需批改的会话（有作业提交但其后无助教回复）
   app.get('/assistant/pending-thought-records', async (req, reply) => {
     const payload = (app as any).requireRole(req, ['assistant_tech', 'admin']);
     const db = createDb();
@@ -640,13 +736,13 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
     if (completed.length === 0) return reply.send({ items: [] });
 
     const sessionIds = completed.map(s => s.id);
-    const trs = await db.select({ sessionId: thoughtRecords.sessionId, createdAt: thoughtRecords.createdAt })
-      .from(thoughtRecords)
-      .where(inArray(thoughtRecords.sessionId as any, sessionIds as any));
-    const trCreatedAtBySession = new Map<string, Date>();
-    for (const tr of trs as any[]) trCreatedAtBySession.set(tr.sessionId, new Date(tr.createdAt));
+    const subs = await db.select({ sessionId: homeworkSubmissions.sessionId, createdAt: homeworkSubmissions.createdAt })
+      .from(homeworkSubmissions)
+      .where(inArray(homeworkSubmissions.sessionId as any, sessionIds as any));
+    const subCreatedAtBySession = new Map<string, Date>();
+    for (const sub of subs as any[]) subCreatedAtBySession.set(sub.sessionId, new Date(sub.createdAt));
 
-    const sessionsWithTr = completed.filter(s => trCreatedAtBySession.has(s.id));
+    const sessionsWithTr = completed.filter(s => subCreatedAtBySession.has(s.id));
     if (sessionsWithTr.length === 0) return reply.send({ items: [] });
 
     const msgs = await db.select({ sessionId: assistantChatMessages.sessionId, createdAt: assistantChatMessages.createdAt, senderRole: assistantChatMessages.senderRole })
@@ -658,7 +754,7 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
 
     const hasReplyAfterTr = new Set<string>();
     for (const m of msgs as any[]) {
-      const trAt = trCreatedAtBySession.get(m.sessionId!);
+      const trAt = subCreatedAtBySession.get(m.sessionId!);
       if (!trAt) continue;
       if (new Date(m.createdAt) >= trAt) {
         hasReplyAfterTr.add(m.sessionId!);
@@ -676,14 +772,14 @@ export async function registerAssistantRoutes(app: FastifyInstance) {
     const nameById = new Map<string, string>();
     for (const u of studentsRows as any[]) nameById.set(u.id, u.name);
 
-    const items = needReview.map(s => {
+      const items = needReview.map(s => {
       const studentId = byInstanceToStudent[s.visitorInstanceId];
       return {
         studentId,
         studentName: nameById.get(studentId) || '学生',
         sessionId: s.id,
         sessionNumber: s.sessionNumber,
-        submittedAt: trCreatedAtBySession.get(s.id)?.toISOString() || null,
+          submittedAt: subCreatedAtBySession.get(s.id)?.toISOString() || null,
       };
     });
 

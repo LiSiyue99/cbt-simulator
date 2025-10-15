@@ -1,0 +1,94 @@
+{
+  "ok": true,
+  "user": {
+    "id": "bcb1febe-94fa-41da-939c-c591cc75f844",
+    "email": "2591831499@qq.com",
+    "name": "张佳佳",
+    "role": "student",
+    "classId": 3
+  },
+  "whitelist": {
+    "role": "assistant_class",
+    "classId": 1,
+    "assignedVisitor": null,
+    "inchargeVisitor": null
+  },
+  "grants": [
+    {
+      "role": "assistant_class",
+      "classId": 1
+    }
+  ],
+  "instances": [
+    {
+      "id": "e64ce73c-f425-46ca-819e-b0e479af552e",
+      "templateId": "30547754-b3dc-4b1f-91a9-ebc3a060d999",
+      "templateKey": "8",
+      "templateName": "林蔚莱"
+    },
+    {
+      "id": "e40ebb6d-2e8d-42e3-b0a0-29f707c2e173",
+      "templateId": "4174852a-7660-495f-b3ff-db4677d62097",
+      "templateKey": "9",
+      "templateName": "蔡白婷"
+    },
+    {
+      "id": "c70fb576-32ee-4678-909e-68e93e979bbd",
+      "templateId": "4178b124-24b6-48c6-81f3-3d1a77253c4b",
+      "templateKey": "3",
+      "templateName": "金佳梅"
+    },
+    {
+      "id": "b6e0196c-99c1-417d-a6f4-ff194dd764aa",
+      "templateId": "5ea2ac49-0e9f-43cd-bf34-25ae1f547228",
+      "templateKey": "1",
+      "templateName": "小璐"
+    },
+    {
+      "id": "9632b513-fac1-4692-bd83-f5e35460c7af",
+      "templateId": "6196a96d-9316-4339-8bb1-446fb2e4cd5f",
+      "templateKey": "7",
+      "templateName": "林玥"
+    },
+    {
+      "id": "2a900e57-4af0-48c6-ab0f-cf641d7531d4",
+      "templateId": "71c78f33-e1de-4a37-96d2-6ef36097fb51",
+      "templateKey": "4",
+      "templateName": "小鹏"
+    },
+    {
+      "id": "9f00eecd-2943-4124-9fc5-df7d1117f2a0",
+      "templateId": "904d009e-a00d-464d-b1e7-702ae00116e2",
+      "templateKey": "5",
+      "templateName": "小柔"
+    },
+    {
+      "id": "a3fe09b3-a946-41f4-872f-56b1c77ae36a",
+      "templateId": "b34f9b82-e26f-492e-a3cb-2cfb45af8730",
+      "templateKey": "10",
+      "templateName": "李轩"
+    },
+    {
+      "id": "ff1c27bc-749e-438b-8263-4c2b825b769d",
+      "templateId": "d9959787-9919-4c34-b1a1-455aa43162c9",
+      "templateKey": "2",
+      "templateName": "江月"
+    },
+    {
+      "id": "78c97257-0eae-4eb3-8b80-70365560ed32",
+      "templateId": "f4c937b8-e9fd-41d0-a87e-99f68a965a74",
+      "templateKey": "6",
+      "templateName": "陈强"
+    }
+  ],
+  "studentBindings": [
+    {
+      "assistantId": "22a2e1f8-c594-4718-bf7a-b5eebc262d0d",
+      "assistantEmail": "1598303516@qq.com",
+      "assistantName": "李玉涵",
+      "assistantRole": "assistant_tech",
+      "visitorInstanceId": "e40ebb6d-2e8d-42e3-b0a0-29f707c2e173",
+      "visitorTemplateKey": "9"
+    }
+  ]
+}

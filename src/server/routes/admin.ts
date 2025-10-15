@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../../db/client';
-import { systemConfigs, deadlineOverrides, users, sessions, sessionDeadlineOverrides, visitorInstances, visitorTemplates, auditLogs, assistantStudents } from '../../db/schema';
+import { systemConfigs, deadlineOverrides, users, sessions, sessionDeadlineOverrides, visitorInstances, visitorTemplates, auditLogs, assistantStudents, homeworkSets } from '../../db/schema';
 import { formatWeekKey } from '../../policy/timeWindow';
 import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import { createId } from '@paralleldrive/cuid2';
@@ -518,5 +518,95 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       .orderBy(desc(sessionDeadlineOverrides.createdAt as any))
       .limit(100);
     return reply.send({ items: ovs });
+  });
+
+  // ================= Homework Sets (Admin) =================
+  // Create a homework set (deliver package)
+  app.post('/admin/homework/sets', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['admin']);
+    const db = createDb();
+    const body = (req.body || {}) as any;
+    const required = ['classId','sequenceNumber','formFields','studentStartAt','studentDeadline','assistantStartAt','assistantDeadline'];
+    for (const k of required) if (body[k] === undefined || body[k] === null) return reply.status(400).send({ error: 'bad_request', message: `missing ${k}` });
+    const item = {
+      id: createId(),
+      classId: Number(body.classId),
+      title: body.title || null,
+      description: body.description || null,
+      sequenceNumber: Number(body.sequenceNumber),
+      formFields: Array.isArray(body.formFields) ? body.formFields : [],
+      studentStartAt: new Date(body.studentStartAt),
+      studentDeadline: new Date(body.studentDeadline),
+      assistantStartAt: new Date(body.assistantStartAt),
+      assistantDeadline: new Date(body.assistantDeadline),
+      status: String(body.status || 'published'),
+      createdBy: (payload as any).userId,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any;
+    try {
+      await db.insert(homeworkSets).values(item);
+      await writeAudit(db, (payload as any).userId, 'create_homework_set', 'homework_set', item.id, `class ${item.classId} seq ${item.sequenceNumber}`);
+      return reply.send({ ok: true, id: item.id });
+    } catch (e:any) {
+      return reply.status(500).send({ error: 'create_failed', message: e?.message });
+    }
+  });
+
+  // List homework sets
+  app.get('/admin/homework/sets', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['admin']);
+    const db = createDb();
+    const { classId, sequenceNumber } = (req.query || {}) as any;
+    let rows = await db.select().from(homeworkSets).orderBy(desc(homeworkSets.updatedAt as any));
+    if (classId !== undefined) rows = (rows as any[]).filter((r:any)=> String(r.classId) === String(classId));
+    if (sequenceNumber !== undefined) rows = (rows as any[]).filter((r:any)=> Number(r.sequenceNumber) === Number(sequenceNumber));
+    return reply.send({ items: rows });
+  });
+
+  // Get a homework set by id
+  app.get('/admin/homework/sets/:id', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['admin']);
+    const db = createDb();
+    const { id } = req.params as any;
+    const [row] = await db.select().from(homeworkSets).where((homeworkSets.id as any).eq ? (homeworkSets.id as any).eq(id) : (homeworkSets.id as any));
+    if (!row || (row as any).id !== id) return reply.status(404).send({ error: 'not_found' });
+    return reply.send({ item: row });
+  });
+
+  // Update a homework set (including DDL windows and formFields)
+  app.put('/admin/homework/sets/:id', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['admin']);
+    const db = createDb();
+    const { id } = req.params as any;
+    const body = (req.body || {}) as any;
+    const allowed: any = {};
+    ['title','description','studentStartAt','studentDeadline','assistantStartAt','assistantDeadline','status','formFields'].forEach(k => {
+      if (body[k] !== undefined) allowed[k] = ['studentStartAt','studentDeadline','assistantStartAt','assistantDeadline'].includes(k) ? new Date(body[k]) : body[k];
+    });
+    if (Object.keys(allowed).length === 0) return reply.status(400).send({ error: 'no_changes' });
+    allowed.updatedAt = new Date();
+    try {
+      await db.update(homeworkSets).set(allowed as any).where((homeworkSets.id as any).eq ? (homeworkSets.id as any).eq(id) : (homeworkSets.id as any));
+      await writeAudit(db, (payload as any).userId, 'update_homework_set', 'homework_set', id, JSON.stringify(Object.keys(allowed)));
+      const [row] = await db.select().from(homeworkSets).where((homeworkSets.id as any).eq ? (homeworkSets.id as any).eq(id) : (homeworkSets.id as any));
+      return reply.send({ ok: true, item: row });
+    } catch (e:any) {
+      return reply.status(500).send({ error: 'update_failed', message: e?.message });
+    }
+  });
+
+  // Delete a homework set
+  app.delete('/admin/homework/sets/:id', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['admin']);
+    const db = createDb();
+    const { id } = req.params as any;
+    try {
+      await (db as any).delete(homeworkSets).where((homeworkSets.id as any).eq ? (homeworkSets.id as any).eq(id) : (homeworkSets.id as any));
+      await writeAudit(db, (payload as any).userId, 'delete_homework_set', 'homework_set', id, 'delete');
+      return reply.send({ ok: true });
+    } catch (e:any) {
+      return reply.status(500).send({ error: 'delete_failed', message: e?.message });
+    }
   });
 }

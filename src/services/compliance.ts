@@ -1,5 +1,5 @@
 import { createDb } from '../db/client';
-import { users, sessions, thoughtRecords, assistantStudents, weeklyCompliance, visitorInstances, assistantChatMessages } from '../db/schema';
+import { users, sessions, assistantStudents, weeklyCompliance, visitorInstances, assistantChatMessages, homeworkSubmissions } from '../db/schema';
 import { eq, and, desc } from 'drizzle-orm';
 import { getBeijingNow, formatWeekKey, getStudentDeadline, getAssistantDeadline, getSessionOverrideUntil } from '../policy/timeWindow';
 
@@ -25,7 +25,7 @@ export async function computeClassWeekCompliance(classId: number, weekKey?: stri
       const sessRows = await db.select().from(sessions).where(eq(sessions.visitorInstanceId as any, (inst as any).id));
       hasSession = sessRows.length > 0 ? 1 : 0;
 
-      const trRows = await db.select().from(thoughtRecords).where(eq(thoughtRecords.sessionId as any, (sessRows[0] as any)?.id));
+      const trRows = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, (sessRows[0] as any)?.id));
       // 会话级覆盖优先
       let effStudentDeadline = studentDeadline;
       if (sessRows[0]) {
@@ -49,7 +49,7 @@ export async function computeClassWeekCompliance(classId: number, weekKey?: stri
         hasAnyFeedbackBySun = chatRows.some((r: any) => new Date(r.createdAt) <= effAssistantDeadline) ? 1 : 0;
       }
 
-      // 锁定逻辑：过了周五且未提交三联表
+      // 锁定逻辑：过了周五且未提交作业
       let lockCheckDeadline = studentDeadline;
       if (sessRows[0]) {
         const over = await getSessionOverrideUntil((sessRows[0] as any).id, 'extend_student_tr');

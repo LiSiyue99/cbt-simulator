@@ -1,0 +1,46 @@
+DrizzleQueryError: Failed query: insert into "whitelist_emails" ("email", "name", "user_id", "role", "class_id", "assigned_visitor", "incharge_visitor", "student_count", "status", "created_at", "updated_at") values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+params: Lishidandd@163.com,李世丹,202421040524,student,3,3,,0,active,2025-10-15T05:36:40.303Z,2025-10-15T05:36:40.303Z
+    at NodePgPreparedQuery.queryWithCache (/Users/siyue/Documents/GitHub/cbt-simulator/node_modules/src/pg-core/session.ts:73:11)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async upsertWhitelistEmails (/Users/siyue/Documents/GitHub/cbt-simulator/src/main/importWhitelist.ts:64:7)
+    at async main (/Users/siyue/Documents/GitHub/cbt-simulator/src/main/importWhitelist.ts:176:3) {
+  query: 'insert into "whitelist_emails" ("email", "name", "user_id", "role", "class_id", "assigned_visitor", "incharge_visitor", "student_count", "status", "created_at", "updated_at") values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
+  params: [
+    'Lishidandd@163.com',
+    '李世丹',
+    '202421040524',
+    'student',
+    '3',
+    '3',
+    null,
+    0,
+    'active',
+    '2025-10-15T05:36:40.303Z',
+    '2025-10-15T05:36:40.303Z'
+  ],
+  cause: error: duplicate key value violates unique constraint "whitelist_user_id_uq"
+      at /Users/siyue/Documents/GitHub/cbt-simulator/node_modules/pg-pool/index.js:45:11
+      at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+      at async <anonymous> (/Users/siyue/Documents/GitHub/cbt-simulator/node_modules/src/node-postgres/session.ts:149:14)
+      at async NodePgPreparedQuery.queryWithCache (/Users/siyue/Documents/GitHub/cbt-simulator/node_modules/src/pg-core/session.ts:71:12)
+      at async upsertWhitelistEmails (/Users/siyue/Documents/GitHub/cbt-simulator/src/main/importWhitelist.ts:64:7)
+      at async main (/Users/siyue/Documents/GitHub/cbt-simulator/src/main/importWhitelist.ts:176:3) {
+    length: 227,
+    severity: 'ERROR',
+    code: '23505',
+    detail: 'Key (user_id)=(202421040524) already exists.',
+    hint: undefined,
+    position: undefined,
+    internalPosition: undefined,
+    internalQuery: undefined,
+    where: undefined,
+    schema: 'public',
+    table: 'whitelist_emails',
+    column: undefined,
+    dataType: undefined,
+    constraint: 'whitelist_user_id_uq',
+    file: 'nbtinsert.c',
+    line: '666',
+    routine: '_bt_check_unique'
+  }
+}

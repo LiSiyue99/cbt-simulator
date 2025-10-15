@@ -1,7 +1,7 @@
 import { chatComplete } from '../client/qwen';
 import { appendChatTurn } from '../services/sessionCrud';
 import { createDb } from '../db/client';
-import { thoughtRecords, sessions } from '../db/schema';
+import { sessions, homeworkSubmissions, homeworkSets, users, visitorInstances } from '../db/schema';
 import { eq } from 'drizzle-orm';
 
 /**
@@ -28,21 +28,50 @@ export async function generateMockHumanReply(context: {
 }
 
 /**
- * 在会话结束后，模拟人类填写三联表。
+ * 在会话结束后，模拟人类提交作业。
  */
 export async function submitMockThoughtRecord(sessionId: string) {
   const db = createDb();
   const [s] = await db.select().from(sessions).where(eq(sessions.id, sessionId));
   const base = typeof s?.chatHistory === 'string' ? s?.chatHistory : JSON.stringify(s?.chatHistory ?? '');
-  const triggeringEvent = '本周一个令我明显焦虑的瞬间';
-  const thoughtsAndBeliefs = '他皱眉=我很差；若犯错=被否定（灾难化/读心术）';
-  const consequences = '焦虑7/10，回避发言，晚上反刍';
-  await db.insert(thoughtRecords).values({
+  // 找到该 session 所属学生与班级，并匹配或创建一个 mock 作业集
+  const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, (s as any).visitorInstanceId));
+  const [stu] = await db.select().from(users).where(eq(users.id as any, (inst as any).userId));
+  const seq = (s as any).sessionNumber;
+  let [setRow] = await db.select().from(homeworkSets).where((homeworkSets.classId as any).eq ? (homeworkSets.classId as any).eq((stu as any).classId) : (homeworkSets.classId as any));
+  if (!setRow || (setRow as any).sequenceNumber !== seq) {
+    const now = new Date();
+    const id = crypto.randomUUID();
+    await db.insert(homeworkSets).values({
+      id,
+      classId: (stu as any).classId,
+      title: 'Mock 作业',
+      description: '用于测试的作业',
+      sequenceNumber: seq,
+      formFields: [
+        { key: 'situation', label: '情境', type: 'textarea', placeholder: '发生了什么', helpText: '简述触发事件' },
+        { key: 'thoughts', label: '想法', type: 'textarea', placeholder: '你在想什么', helpText: '自动化思维' },
+        { key: 'consequence', label: '后果', type: 'textarea', placeholder: '产生了什么影响', helpText: '情绪/行为' },
+      ],
+      studentStartAt: now,
+      studentDeadline: new Date(now.getTime() + 3*24*3600*1000),
+      assistantStartAt: now,
+      assistantDeadline: new Date(now.getTime() + 7*24*3600*1000),
+      status: 'published',
+      createdBy: (stu as any).id,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+    const rows = await db.select().from(homeworkSets).where((homeworkSets.id as any).eq ? (homeworkSets.id as any).eq(id) : (homeworkSets.id as any));
+    setRow = rows[0];
+  }
+
+  await db.insert(homeworkSubmissions).values({
     id: crypto.randomUUID(),
+    homeworkSetId: (setRow as any).id,
     sessionId,
-    triggeringEvent,
-    thoughtsAndBeliefs,
-    consequences,
+    studentId: (stu as any).id,
+    formData: { situation: '一个令我焦虑的瞬间', thoughts: '他皱眉=我很差', consequence: '焦虑7/10' } as any,
     createdAt: new Date(),
     updatedAt: new Date(),
   } as any);

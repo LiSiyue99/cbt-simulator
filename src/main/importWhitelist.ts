@@ -19,8 +19,6 @@ type WhitelistRow = {
   role: 'student' | 'assistant_tech' | 'assistant_class' | 'admin';
   classId?: string;
   studentNo?: string; // 输入别名，将写入 users.userId
-  assignedTechAsst?: string;
-  assignedClassAsst?: string;
   assignedVisitor?: string; // '1'..'10'
   inchargeVisitor?: string; // JSON string of ["1","5"]
   studentCount?: string;
@@ -35,10 +33,14 @@ function required<T>(v: T | undefined | null, msg: string): T {
 async function readCsv(filePath: string): Promise<WhitelistRow[]> {
   const content = fs.readFileSync(filePath, 'utf8');
   return new Promise((resolve, reject) => {
-    parse(content, { columns: true, trim: true }, (err, records: any[]) => {
-      if (err) return reject(err);
-      resolve(records as WhitelistRow[]);
-    });
+    parse(
+      content,
+      { columns: true, trim: true, relaxQuotes: true, skipEmptyLines: true, bom: true },
+      (err, records: any[]) => {
+        if (err) return reject(err);
+        resolve(records as WhitelistRow[]);
+      }
+    );
   });
 }
 
@@ -52,8 +54,6 @@ async function upsertWhitelistEmails(rows: WhitelistRow[]) {
       userId: r.userId || r.studentNo || null,
       role: r.role,
       classId: r.classId || null,
-      assignedTechAsst: r.assignedTechAsst || null,
-      assignedClassAsst: r.assignedClassAsst || null,
       assignedVisitor: r.assignedVisitor || null,
       inchargeVisitor: r.inchargeVisitor ? JSON.parse(r.inchargeVisitor) : null,
       studentCount: r.studentCount ? Number(r.studentCount) : 0,
@@ -126,32 +126,23 @@ async function assignStudents(rows: WhitelistRow[]) {
   const db = createDb();
   const students = rows.filter(r => r.role === 'student');
 
+  const summary = { totalCSVStudents: students.length, matchedUsers: 0, alreadyHadAnyInstance: 0, createdInstances: 0 };
+
   // 读取模板 map
   const tplRows = await db.select().from(visitorTemplates);
   const keyToTemplateId: Record<string, string> = {};
   for (const t of tplRows as any[]) {
-    // 模板表需包含 templateKey 字段
     keyToTemplateId[(t as any).templateKey] = (t as any).id;
-  }
-
-  // 技术助教查找表：userId/email 映射到 users.id
-  const assistantByUserId: Record<string, string> = {};
-  const assistantByEmail: Record<string, string> = {};
-  for (const r of rows.filter(r => r.role === 'assistant_tech')) {
-    const [u] = await db.select().from(users).where(eq(users.email as any, r.email));
-    if (u) {
-      if (r.userId) assistantByUserId[r.userId] = (u as any).id;
-      assistantByEmail[r.email] = (u as any).id;
-    }
   }
 
   for (const s of students) {
     const [u] = await db.select().from(users).where(eq(users.email as any, s.email));
     if (!u) continue;
+    summary.matchedUsers += 1;
 
     // 判断该学生是否已有 visitor instance
     const existing = await db.select().from(visitorInstances).where(eq(visitorInstances.userId as any, (u as any).id));
-    if (existing.length) continue;
+    if (existing.length) { summary.alreadyHadAnyInstance += 1; continue; }
 
     const templateKey = s.assignedVisitor || String(((Math.random() * 10) | 0) + 1);
     const templateId = keyToTemplateId[templateKey];
@@ -172,34 +163,21 @@ async function assignStudents(rows: WhitelistRow[]) {
       createdAt: new Date(),
       updatedAt: new Date(),
     } as any);
-
-    // 助教绑定（如果指定了 assignedTechAsst）
-    let assistantId: string | undefined;
-    if (s.assignedTechAsst) {
-      assistantId = assistantByUserId[s.assignedTechAsst] || assistantByEmail[s.assignedTechAsst];
-    }
-    if (assistantId) {
-      await db.insert(assistantStudents).values({
-        id: crypto.randomUUID(),
-        assistantId,
-        studentId: (u as any).id,
-        visitorInstanceId: instanceId,
-        createdAt: new Date(),
-      } as any);
-    }
+    summary.createdInstances += 1;
   }
+
+  return summary;
 }
 
 async function main() {
   const csvFile = process.argv[2];
   if (!csvFile) throw new Error('Usage: tsx src/main/importWhitelist.ts <csv_file_path>');
   const rows = await readCsv(path.resolve(csvFile));
-  // 先白名单 upsert，确保认证链路可用
   await upsertWhitelistEmails(rows);
   await upsertUsersFromWhitelist(rows);
   await upsertUserRoleGrants(rows);
-  await assignStudents(rows);
-  console.log('Whitelist import completed.');
+  const summary = await assignStudents(rows);
+  console.log(JSON.stringify({ ok: true, summary }, null, 2));
 }
 
 main().catch((err) => {

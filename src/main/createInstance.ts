@@ -7,7 +7,7 @@ async function run() {
   let [tpl] = await db.select().from(visitorTemplates).where(eq(visitorTemplates.templateKey as any, '1')).limit(1);
   if (!tpl) throw new Error('templateKey=1 not found. Run seed:templates first.');
   const userId = crypto.randomUUID();
-  await db.insert(users).values({ id: userId, email: `student_${Date.now()}@example.com`, role: 'student', createdAt: new Date(), updatedAt: new Date() } as any);
+  await db.insert(users).values({ id: userId, email: `student_${Date.now()}@example.com`, name: '种子学生', role: 'student', classId: 1 as any, createdAt: new Date(), updatedAt: new Date() } as any);
   const instanceId = crypto.randomUUID();
   await db.insert(visitorInstances).values({ id: instanceId, userId, templateId: (tpl as any).id, longTermMemory: {}, createdAt: new Date(), updatedAt: new Date() } as any);
   console.log(instanceId);

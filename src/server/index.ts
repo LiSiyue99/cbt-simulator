@@ -3,7 +3,6 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import { registerSessionRoutes } from './routes/sessions';
-import { registerThoughtRecordRoutes } from './routes/thoughtRecords';
 import { registerAuthRoutes } from './routes/auth';
 import { registerAssistantRoutes } from './routes/assistant';
 import { registerAdminRoutes } from './routes/admin';
@@ -26,7 +25,7 @@ export async function buildServer() {
   await app.register(authPlugin);
 
   await registerSessionRoutes(app);
-  await registerThoughtRecordRoutes(app);
+  // thoughtRecords 路由已移除，改为通用作业接口
   await registerAuthRoutes(app);
   await registerAssistantRoutes(app);
   // 旧 questions/feedbacks 已废弃，统一由 assistant chat 替代

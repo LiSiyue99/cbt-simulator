@@ -1,0 +1,19 @@
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/Users/siyue/Documents/GitHub/cbt-simulator/drizzle.config.ts'
+Using 'pg' driver for database querying
+[⣷] Pulling schema from database...
+[2K[1G[⣯] Pulling schema from database...
+[2K[1G[⣟] Pulling schema from database...
+[2K[1G[⡿] Pulling schema from database...
+[2K[1G[✓] Pulling schema from database...
+ Warning  Found data-loss statements:
+· You're about to delete assigned_tech_asst column in whitelist_emails table with 124 items
+· You're about to delete assigned_class_asst column in whitelist_emails table with 124 items
+
+THIS ACTION WILL CAUSE DATA LOSS AND CANNOT BE REVERTED
+
+Do you still want to push changes?
+[?25l❯ No, abort
+  Yes, I want to remove 2 columns, [2K[1G❯ No, abort
+  Yes, I want to remove 2 columns, [?25h[?25h
+^C
