@@ -163,7 +163,7 @@ export const sessions = pgTable(
   }
 );
 
-// 三联表记录保持不变
+// 三联表
 export const thoughtRecords = pgTable(
   "thought_records",
   {
