@@ -6,10 +6,10 @@ Key Challenges and Analysis
 
 - 映射关系：作业集需与每个班的 sessionNumber 严格对齐（sequenceNumber）。学生 session 的编号仍按“完成的最大编号+1”规则，作业集以 sequenceNumber 标识第几次作业。
 - 动态表单：字段支持类型足够通用且简单（全部必填、无需最小长度/选项集），需支持字段的“提示说明/占位文本”。
-- 窗口期：与全局“开窗/封窗”策略（timeWindow）解耦，作业集自身具备 studentStartAt/studentDeadline 与 assistantStartAt/assistantDeadline。管理员可直接修改该作业集的 DDL（等价于对该 package 进行时间修改）。
-- 批改模型：延续“助教与学生的聊天”作为批改载体，不新增评分/打分 UI。待批改判定逻辑需从“三联表后无助教回复”迁移为“该次作业有提交后，无助教在提交时间之后的聊天”。
+- 窗口期：与全局"开窗/封窗"策略（timeWindow）解耦，作业集自身具备 studentStartAt/studentDeadline 与 assistantStartAt/assistantDeadline。管理员可直接修改该作业集的 DDL（等价于对该 package 进行时间修改）。
+- 批改模型：延续"助教与学生的聊天"作为批改载体，不新增评分/打分 UI。待批改判定逻辑需从"三联表后无助教回复"迁移为"该次作业有提交后，无助教在提交时间之后的聊天"。
 - 兼容性改造：彻底移除 `thought_records` 表与相关接口、统计和页面；将所有统计（作业已交、待批改）切换为基于新通用提交。
-- 行政助教统计：若现有按班/按周的合规统计未覆盖作业与助教批改，需要补齐“完成率/未交/已批改率/逾期分析”等。
+- 行政助教统计：若现有按班/按周的合规统计未覆盖作业与助教批改，需要补齐"完成率/未交/已批改率/逾期分析"等。
 
 High-level Task Breakdown
 
@@ -20,22 +20,22 @@ High-level Task Breakdown
    - 成功标准：管理员可创建/查询/更新/删除作业集；可随时编辑该 package 的 student/assistant 窗口；带简单权限校验与审计日志。
 
 3) Student 后端接口：提交与查询（按 session ←→ sequenceNumber 映射）
-   - 成功标准：在窗口内允许提交动态表单；重复提交策略按“覆盖/单次”之一（初版按单次+可更新）；可按 sessionId 读取自己的提交。
+   - 成功标准：在窗口内允许提交动态表单；重复提交策略按"覆盖/单次"之一（初版按单次+可更新）；可按 sessionId 读取自己的提交。
 
 4) Assistant 后端接口与统计：待批改列表/仪表替换逻辑
-   - 成功标准：`/assistant/pending-*` 改为基于提交时间与助教聊天的“无回复”判定；仪表盘统计用新数据源。
+   - 成功标准：`/assistant/pending-*` 改为基于提交时间与助教聊天的"无回复"判定；仪表盘统计用新数据源。
 
 5) Sessions/Assignments 列表统计替换
    - 成功标准：原 `thoughtRecordCount/hasThoughtRecord` 替换为 `hasSubmission/submissionCount`，返回字段与前端对齐。
 
 6) AssistantClass（行政）统计补齐
-   - 成功标准：合规/进度接口包含“作业完成/已批改”维度；可按班/按周聚合；前端页面正确展示。
+   - 成功标准：合规/进度接口包含"作业完成/已批改"维度；可按班/按周聚合；前端页面正确展示。
 
 7) 前端 Services：替换三联表 API 为通用作业 API
    - 成功标准：新增 `homeworkSets.ts/homeworkSubmissions.ts`；移除 `thoughtRecords.ts`；`assignments.ts` 统计字段同步。
 
 8) 前端页面：`dashboard/assignments` 动态表单渲染与窗口状态
-   - 成功标准：在开放期展示“去填写”，过期显示“已截止”；渲染管理员设置的字段（全部必填，有占位/说明）；保留既有助教聊天区。
+   - 成功标准：在开放期展示"去填写"，过期显示"已截止"；渲染管理员设置的字段（全部必填，有占位/说明）；保留既有助教聊天区。
 
 9) 文档同步：`docs/api.md` 与 `web/FRONTEND_API.md`
    - 成功标准：新增/变更端点完整、示例准确，删除旧三联表端点。
@@ -97,7 +97,7 @@ Design Details
   - 窗口校验：studentStartAt ≤ now ≤ studentDeadline 方可创建/更新
 
 - Assistant（改造）
-  - GET /assistant/pending-homework → 返回“有提交但提交后无助教消息”的会话清单（替代 pending-thought-records）
+  - GET /assistant/pending-homework → 返回"有提交但提交后无助教消息"的会话清单（替代 pending-thought-records）
   - 其它聊天接口保持不变
 
 - Sessions/Assignments（改造）
@@ -122,8 +122,8 @@ Design Details
 
 - 页面 `web/src/app/dashboard/assignments/page.tsx`
   - 左侧 session 列表：以 hasSubmission 取代 thoughtRecordCount；仍显示 chatCount。
-  - 右侧：根据 `by-session` 返回的 formFields 动态渲染（全部必填）；窗口内显示“提交”按钮，否则只读/禁用并显示“已截止”。
-  - 下方“助教互动”聊天区：保留现有实现。
+  - 右侧：根据 `by-session` 返回的 formFields 动态渲染（全部必填）；窗口内显示"提交"按钮，否则只读/禁用并显示"已截止"。
+  - 下方"助教互动"聊天区：保留现有实现。
 
 5. 文档与测试
 
@@ -139,7 +139,7 @@ Project Status Board
 - [ ] 更新数据库：移除 thought_records，新增 homework_sets/homework_submissions 表
 - [ ] 后端Admin：新增作业集CRUD与DDL窗口接口
 - [ ] 后端Student：新增提交与查询接口（按 session 映射 set）
-- [x] 后端Assistant：替换“待批改三联表”为“待批改作业提交”，保留聊天（新增 `/assistant/homework/submission`、`/assistant/homework/detail`）
+- [x] 后端Assistant：替换"待批改三联表"为"待批改作业提交"，保留聊天（新增 `/assistant/homework/submission`、`/assistant/homework/detail`）
 - [ ] 后端Sessions/Assignments：用作业提交统计替换 hasThoughtRecord/计数
 - [ ] 后端AssistantClass：合规/进度统计改为基于作业提交与助教聊天
 - [ ] 前端Services：移除 thoughtRecords.ts，新增 homeworkSets.ts/homeworkSubmissions.ts
@@ -162,7 +162,7 @@ Executor's Feedback or Assistance Requests
 
 - 字段类型初版拟定为：text/textarea/number/date/boolean（全部必填，无选项集）。是否需要文件上传/图片（若需要，需补充上传存储策略）？若暂不需要，将按上述五类落地。
 - 逾期策略默认仅用于统计与提示，不阻断助教聊天；如需阻断或灰显入口，请明确。
-- 前端助教“学生详情”页面中，是否需要显示“作业集窗口期（studentStartAt/studentDeadline）”与“助教反馈窗口（assistantDeadline）”？目前计划在详情卡片中一并显示。
+- 前端助教"学生详情"页面中，是否需要显示"作业集窗口期（studentStartAt/studentDeadline）"与"助教反馈窗口（assistantDeadline）"？目前计划在详情卡片中一并显示。
 
 Lessons
 
@@ -177,11 +177,11 @@ Lessons
   - 上游 429/5xx/网络抖动导致单请求失败或长时间挂起；
   - 高峰期触发提供商限流，导致尾部请求级联超时；
   - 前端体验受阻（无流式/无降级），用户感知差；
-  - 无内部回退（多提供商/多模型），“备用 API”由前端轮询切换并不可取。
+  - 无内部回退（多提供商/多模型），"备用 API"由前端轮询切换并不可取。
 
 ## Key Challenges and Analysis
 1) 并发与背压
-   - 路由层未对“同时在飞的 LLM 调用”做并发上限与排队；80 并发在一个实例上可能瞬间透传到上游，触发 429。
+   - 路由层未对"同时在飞的 LLM 调用"做并发上限与排队；80 并发在一个实例上可能瞬间透传到上游，触发 429。
 2) 稳定性
    - 缺少请求超时、指数退避重试（针对可重试的 429/5xx/网络错误）、熔断（持续失败时快速失败并触发降级）。
 3) 供给冗余
@@ -196,14 +196,14 @@ Lessons
 ## High-level Task Breakdown
 1) 引入提供商无关的 LLM 客户端层（抽象）
    - 成果：`src/client/llm/index.ts` 暴露统一接口（chatComplete），适配 `qwen`, 可选 `openai`/`moonshot` 等，通过环境变量配置可用提供商与权重。
-   - 成功标准：保持现有调用点最小改动即可切换；单测覆盖“正常/429/5xx/网络错误”。
+   - 成功标准：保持现有调用点最小改动即可切换；单测覆盖"正常/429/5xx/网络错误"。
 
 2) 请求级稳态控制（超时/重试/抖动/可重试判定）
    - 成果：对单次 LLM 调用设置超时（如 20–25s）、指数退避重试（最多 2–3 次，带抖动），仅对 429/5xx/网络错误重试；
    - 成功标准：在人工注入 429/5xx 时 p95 成功率显著提升，重试上限受控。
 
 3) 并发门控与轻量队列
-   - 成果：在进程内引入并发上限（如 16–24）与排队（最大等待时间与队列长度）；溢出快速失败（返回“稍后再试”）；
+   - 成果：在进程内引入并发上限（如 16–24）与排队（最大等待时间与队列长度）；溢出快速失败（返回"稍后再试"）；
    - 成功标准：在 80 并发压测时，上游 429 显著下降，总吞吐稳定，尾部延迟可控。
 
 4) 熔断与健康探测
@@ -211,7 +211,7 @@ Lessons
    - 成功标准：上游长时间异常期间快速降级，不拖垮请求线程，自动恢复后可平滑切回。
 
 5) 多提供商/多模型回退策略
-   - 成果：按权重/优先级路由到主提供商；主失败后快速切换次提供商或次模型；支持“请求拆分与合并”（可选）；
+   - 成果：按权重/优先级路由到主提供商；主失败后快速切换次提供商或次模型；支持"请求拆分与合并"（可选）；
    - 成功标准：主提供商不可用时，用户成功率保持 > 98%。
 
 6) 前端流式与错误体验优化（SSE）
@@ -253,7 +253,7 @@ Lessons
 - 计算：1 台 ECS（Ubuntu 22.04 LTS），部署后端 `cbt-simulator`（Fastify）与前端 `cbt-simulator-front`（Next.js 静态/SSR），使用 Nginx 反向代理与 TLS 终止。
 - 数据库：阿里云 RDS for PostgreSQL（专有网络 VPC），开启自动备份，最小规格起步。
 - 网络：ECS 与 RDS 位于同一 VPC 子网；RDS 仅允许来自 ECS 安全组的访问；公网仅暴露 80/443。
-- 域名与证书：域名 DNS A/AAAA 指向 ECS 公网 IP；Nginx + certbot 申请 Let’s Encrypt 证书，强制 HTTPS。
+- 域名与证书：域名 DNS A/AAAA 指向 ECS 公网 IP；Nginx + certbot 申请 Let's Encrypt 证书，强制 HTTPS。
 - 运维：pm2 或 systemd 守护 Node 进程；GitHub Actions 进行 CI/CD 自动化部署；阿里云 CloudMonitor 告警。
 
 ### 关键参数与环境变量
@@ -372,13 +372,13 @@ Lessons
 ---
 
 Background and Motivation (Update)
-- New front-end asks: (1) 全量会话历史可浏览；聊天页自动加载“上一条会话的聊天记录”（仅 chat，不返回任何 summary）；(2) 并行教学系统（助教工作台：按“学生→会话”维度浏览、问答与反馈）；(3) 用户与权限：白名单邮箱 + 验证码登录；角色含 student/assistant/admin（teacher 暂缓）。
-- Goal: 在不破坏既有会话流水线的前提下，补齐“历史浏览/教学审阅/鉴权与授权”最小可用后端。
+- New front-end asks: (1) 全量会话历史可浏览；聊天页自动加载"上一条会话的聊天记录"（仅 chat，不返回任何 summary）；(2) 并行教学系统（助教工作台：按"学生→会话"维度浏览、问答与反馈）；(3) 用户与权限：白名单邮箱 + 验证码登录；角色含 student/assistant/admin（teacher 暂缓）。
+- Goal: 在不破坏既有会话流水线的前提下，补齐"历史浏览/教学审阅/鉴权与授权"最小可用后端。
 
 Key Challenges and Analysis (Update)
 - 聊天页自动加载：`GET /sessions/last?visitorInstanceId=...` 仅返回最近一条会话的 `chatHistory`（以及 `sessionId`/`sessionNumber`），不返回 summary（diary/activity/homework）。
 - 助教-学生关联：采用白名单邮箱匹配；支持后续 `/admin/assign-assistant` 管理绑定。
-- 教学互动需求：按“学生→会话”组织；无评分，仅文字型反馈；需具备后续加“时间限制（学生提交截止、助教反馈截止）”的可扩展性。
+- 教学互动需求：按"学生→会话"组织；无评分，仅文字型反馈；需具备后续加"时间限制（学生提交截止、助教反馈截止）"的可扩展性。
 
 High-level Task Breakdown (Revised Planner Items)
 A) 会话历史与聊天页自动加载
@@ -387,7 +387,7 @@ A) 会话历史与聊天页自动加载
 - 明确：GET `/sessions/last?visitorInstanceId` → 返回最近一条会话的 { sessionId, sessionNumber, chatHistory }，仅 chat。
 - 文档：更新 `docs/api.md` 覆盖以上三项。
 
-B) 教学系统配套接口（按“学生→会话”视图，MVP）
+B) 教学系统配套接口（按"学生→会话"视图，MVP）
 - 助教负责范围：
   - GET `/assistant/visitors` → 当前助教负责的 visitor 实例与学生数。
   - GET `/assistant/students?visitorInstanceId=...` → 学生列表（每个包含最近会话时间、会话次数）。
@@ -409,7 +409,7 @@ C) 鉴权与授权（白名单 + 验证码）
   - GET `/me` → 返回当前用户与绑定信息。
 - 授权：
   - 学生：仅可访问自己 `visitorInstanceId` 相关数据。
-  - 助教：仅可访问 `assistant_students` 绑定范围内数据；辅助提供上述按“学生→会话”的查询。
+  - 助教：仅可访问 `assistant_students` 绑定范围内数据；辅助提供上述按"学生→会话"的查询。
 
 D) 数据库 Schema（新增/扩展）
 - 新增：
@@ -418,9 +418,9 @@ D) 数据库 Schema（新增/扩展）
   - `questions`（学生→助教）：id, sessionId(FK), studentId(FK users), content(TEXT), createdAt, updatedAt, dueAt(NULL 可空), status('open'|'answered'|'closed')。
   - `assistant_feedbacks`（助教→学生）：id, sessionId(FK), assistantId(FK users), content(TEXT), createdAt, updatedAt, dueAt(NULL 可空), status('draft'|'published')。
 - 说明：
-  - 通过 `dueAt` 保留未来“时间限制”扩展能力（学生必须周五前提交、助教必须周二前反馈）。
+  - 通过 `dueAt` 保留未来"时间限制"扩展能力（学生必须周五前提交、助教必须周二前反馈）。
   - 不包含评分字段，严格文本反馈。
-  - 两表均以 `sessionId` 为核心关联，满足“按学生→会话”检索（通过学生的 `visitorInstanceId` 与 `sessions` 关联）。
+  - 两表均以 `sessionId` 为核心关联，满足"按学生→会话"检索（通过学生的 `visitorInstanceId` 与 `sessions` 关联）。
 
 E) 文档与联调
 - 更新 `docs/api.md`：
@@ -438,11 +438,11 @@ Project Status Board (Revised)
 Executor's Feedback or Assistance Requests (Updated)
 - 待确认：
   1) `/assistant/students/:studentId/sessions` 响应是否需要附带每条会话的三种状态聚合字段：`hasThoughtRecord`、`hasStudentQuestion`、`hasAssistantFeedback`（前端可直接渲染）。
-  2) `questions` 与 `assistant_feedbacks` 是否需要“多条记录”支持（同一会话可多轮提问与回复）？（建议支持多条，按时间倒序）。
+  2) `questions` 与 `assistant_feedbacks` 是否需要"多条记录"支持（同一会话可多轮提问与回复）？（建议支持多条，按时间倒序）。
   3) 是否需要 `/admin/assign-assistant` 作为简易绑定接口（POST）在本迭代一并提供？
 
 Lessons (Update)
-- 将“聊天页需求”严格限定为“仅返回最近一条聊天记录”，避免与摘要需求混淆。
+- 将"聊天页需求"严格限定为"仅返回最近一条聊天记录"，避免与摘要需求混淆。
 
 
 ---
@@ -453,7 +453,7 @@ Background and Motivation (Frontend)
 Key Challenges and Analysis (Frontend)
 - 角色与路由保护：按 student / assistant_tech / assistant_class / admin 隔离页面与数据请求。
 - Token 注入与错误处理：统一 HTTP 客户端，处理 401/403、节流与重试、全局提示。
-- 数据依赖与装配：学生页面需要 `visitorInstanceId`。当前后端未提供“查询我自己的 visitorInstanceId”端点（/me 仅返回 userId/email/role），需确定获取方式（建议新增端点，或登录后返回）。
+- 数据依赖与装配：学生页面需要 `visitorInstanceId`。当前后端未提供"查询我自己的 visitorInstanceId"端点（/me 仅返回 userId/email/role），需确定获取方式（建议新增端点，或登录后返回）。
 - 后端角色命名一致性：`/assignments/list` 中后端判断了 `payload.role === 'assistant'`，与全局角色 `assistant_tech` 不一致，导致技术助教无法调用该端点；需统一为 `assistant_tech`。
 - API 对齐：会话流与 PRD 一致；`/sessions/last` 仅返回 chatHistory；历史详情 `/sessions/:sessionId` 已实现。
 
@@ -470,7 +470,7 @@ High-level Task Breakdown (Frontend)
    - 自动加载最近一条聊天（`GET /sessions/last`）。
    - 开始会话（`POST /sessions/start`）；对话轮次发送消息（`POST /sessions/{id}/messages`）。
    - 结束会话（`POST /sessions/{id}/finalize`，带 assignment 文本），展示 diary。
-   - 成功标准：可完成一轮“开始→聊天→结束→展示日记”，错误态（锁定/格式）有提示。
+   - 成功标准：可完成一轮"开始→聊天→结束→展示日记"，错误态（锁定/格式）有提示。
 4) 学生 - 作业互动（/dashboard/assignments）
    - 列表（`GET /assignments/list`）、三联表（`POST/GET /thought-records`）、学生提问（`POST/GET /questions`）。
    - 成功标准：按会话分组展示互动项，提交/回显正常。
@@ -489,7 +489,7 @@ Open Questions (Frontend)
    - A) 扩展 `/me` 返回用户的 `visitorInstanceId`（常为 1 个）；或
    - B) 提供 `GET /students/me/instance`（后端新增）
 2) 是否同意将后端 `/assignments/list` 中 `assistant` 统一改为 `assistant_tech`？
-3) 前端是否需要“开发时跳过验证码”的开关（如从 `/auth/verify-code` 一次性拿 token）？
+3) 前端是否需要"开发时跳过验证码"的开关（如从 `/auth/verify-code` 一次性拿 token）？
 
 Project Status Board (Frontend)
 - [ ] 规划确认（本节）
@@ -504,7 +504,7 @@ Project Status Board (Frontend)
 
 Executor's Feedback or Assistance Requests (Frontend)
 - 请确认：
-  1) 是否接受新增“获取学生自己的 visitorInstanceId”的后端端点或扩展 /me？
+  1) 是否接受新增"获取学生自己的 visitorInstanceId"的后端端点或扩展 /me？
   2) 是否同意修正 `/assignments/list` 的角色判断为 `assistant_tech`？
   3) 允许开发期直接在 `/auth/request-code` 返回验证码并在 UI 提示吗？
 
@@ -515,7 +515,7 @@ Lessons (Frontend)
 ## Planner – 人员分配纠偏（基于 CSV 校准）
 
 Background and Motivation
-- 发现 CSV 与系统中“助教负责学生名单”出现错位与扭曲（distortion）。你已修正 CSV（`assigned-output.csv`）。
+- 发现 CSV 与系统中"助教负责学生名单"出现错位与扭曲（distortion）。你已修正 CSV（`assigned-output.csv`）。
 - 目标：以数据库为准，依据 CSV 的以下两类字段重新校准：
   - 学生（role=student）：按 `assignedVisitor` 的编号（1..10）确保各学生存在且仅存在对应模板的 `visitor_instances`。
   - 技术助教（role=assistant_tech）：按 `inchargeVisitor` 的编号集合（可能多项）确保白名单与运行时权限范围一致；并据此生成/纠正 `assistant_students` 绑定，使每位学生绑定到其 `assignedTechAsst` 指定的助教。
@@ -532,9 +532,9 @@ High-level Task Breakdown（本轮最小化变更）
    - 为每个学生：
      - 若不存在对应模板实例 → 创建（`visitor_instances`）。
      - 若存在多个实例或模板不符 → 保留目标模板实例，其他模板的实例暂不删除，仅记录告警（保守策略）。
-   - 成功标准：每个学生至少有且仅有一个“目标模板实例”；多余实例仅记录，不做物理删除（首轮保守）。
+   - 成功标准：每个学生至少有且仅有一个"目标模板实例"；多余实例仅记录，不做物理删除（首轮保守）。
 3) 助教绑定纠偏（按 assignedTechAsst）
-   - 将学生的“目标模板实例”与其 `assignedTechAsst`（可为邮箱或工号）建立唯一绑定（`assistant_students` 上三唯一约束）。
+   - 将学生的"目标模板实例"与其 `assignedTechAsst`（可为邮箱或工号）建立唯一绑定（`assistant_students` 上三唯一约束）。
    - 若存在错误绑定（绑定至错误助教或错误实例）→ 新增正确绑定；错误绑定暂不删除（保守），记录在报告中。
    - 成功标准：每个学生对其目标实例存在至少一个正确的绑定；无重复插入。
 4) 技术助教权限范围对齐（inchargeVisitor）
@@ -542,7 +542,7 @@ High-level Task Breakdown（本轮最小化变更）
 5) 校验与报告
    - 输出：
      - 新创建实例数、新增绑定数
-     - 发现的“多余实例”与“错误绑定”列表（仅记录，不删除）
+     - 发现的"多余实例"与"错误绑定"列表（仅记录，不删除）
      - 助教模板权限不一致列表（学生模板不在 inchargeVisitor 中）
 
 Success Criteria
@@ -559,5 +559,226 @@ Execution Plan
 - 仅在用户批准后执行脚本；执行前先 `npm audit`（如有漏洞警告），且绝不使用 `git push -f`/`--force`。
 
 Risks
-- CSV 若仍存在个别脏字段（邮箱拼写、工号对不齐）会导致“找不到助教用户”；将记录在报告中，需人工修正 CSV 或补录用户信息。
+- CSV 若仍存在个别脏字段（邮箱拼写、工号对不齐）会导致"找不到助教用户"；将记录在报告中，需人工修正 CSV 或补录用户信息。
 - 历史多实例/多绑定未删除，可能在个别页面显示重复或统计偏高；本轮仅定位和报告，留待后续清理策略审批后处理。
+---
+
+## Planner – 后端云端部署对齐与生产命令方案（后端 `cbt-simulator`）
+
+### Background and Motivation
+- 现状：本地开发以 `npm run dev:api`（tsx 直跑 TS）为主，未提供生产构建产物与统一启动命令，Node/NPM 版本未锁定，云端对齐成本高。
+- 目标：补齐生产构建与启动脚本、版本与依赖对齐、环境变量清单、迁移与健康检查流程，以及 PM2 与 Docker 两套部署路径的规范文档与命令矩阵。
+
+### Current Findings（只读审计）
+- 运行栈：Fastify v5、ESM、TS；开发通过 `tsx` 直接运行 TS；无 `build/start` 生产脚本；未声明 engines/node。
+- 数据库与迁移：Drizzle ORM + drizzle-kit；`drizzle.config.ts` 读取 `DATABASE_URL`；已有 `dr:generate`、`dr:migrate` 脚本与 SQL 迁移目录 `drizzle/`。
+- 网络：默认监听 `PORT`（缺省 3000）、`HOST`（缺省 `0.0.0.0`）。
+- 认证：JWT 使用 `JWT_SECRET`（默认 dev 值），建议生产强制设置。
+- 速率限制：`RATELIMIT_MAX`、`RATELIMIT_WINDOW` 可调。
+- AI 供应商：DashScope（Qwen 兼容 OpenAI SDK），使用 `DASHSCOPE_API_KEY(S)`。
+- 数据库 SSL：可选 `PGSSLROOTCERT` 或 `DATABASE_SSL_CA`（阿里云 RDS 建议开启）。
+
+### 环境变量清单（拟 `.env.example`）
+- 必需：
+  - `DATABASE_URL=postgres://<user>:<pass>@<host>:5432/<db>?sslmode=require`
+  - `JWT_SECRET=请替换为强随机值`
+  - `DASHSCOPE_API_KEY=xxxx`（或 `DASHSCOPE_API_KEYS=key1,key2`）
+- 可选：
+  - `PORT=3000`
+  - `HOST=0.0.0.0`
+  - `RATELIMIT_MAX=300`
+  - `RATELIMIT_WINDOW=1 minute`
+  - `PGSSLROOTCERT=/path/to/ca.pem`（或 `DATABASE_SSL_CA=/path/to/ca.pem`）
+  - `NODE_ENV=production`
+
+### Key Challenges and Analysis
+- 生产可执行物：目前没有构建产物，云端若继续用 `tsx` 直跑 TS，启动简单但冷启动与兼容性较弱；建议改为 `tsc` 产出 `dist/` 后以 Node 启动。
+- 版本对齐：未锁定 Node/NPM 版本，易出现"云端编译/运行差异"。
+- 运行守护：需 PM2 或 systemd；或采用 Docker 封装运行时环境。
+- 健康检查：建议提供 `/health`（进程 + DB ping）与 `/ready`（依赖就绪）用于探针。
+- 迁移流程：生产应"先 migrate 再启动"，避免首次启动因缺表失败。
+
+### Success Criteria（验收标准）
+1) 仓库新增 `.env.example`，列出所有变量与注释。
+2) `package.json`：新增 `engines`、`packageManager`、`build`、`start:prod` 脚本；依赖齐全。
+3) 新增 `tsconfig.build.json`，`npm run build` 生成 `dist/`，`npm run start:prod` 以 Node 启动。
+4) 新增健康检查路由（/health），DB 可连时返回 200；文档含探针配置建议。
+5) 提供两套部署：
+   - 非容器（PM2）：`pm2 start dist/server/index.js --name cbt-api` 可稳定运行并自启。
+   - 容器（Docker）：提供 `Dockerfile` 与 `docker build/run` 命令；镜像可启动并加载配置。
+6) 完整的部署文档（ECS + RDS 场景）：安装、配置、迁移、启动、日志与回滚。
+
+### High-level Task Breakdown（实施计划）
+1) 版本与依赖对齐
+   - 在 `package.json` 增加：
+     - `engines`: `{ "node": ">=20 <23", "npm": ">=10" }`
+     - `packageManager`: `"npm@10"`（或按你团队统一的包管器）
+   - 仓库新增 `.nvmrc`（如 `v20.17.0`）。
+   - 成功标准：`nvm use` 或 CI/云端使用指定 Node 版本无差异。
+
+2) 构建与启动脚本
+   - 新增 `tsconfig.build.json`（outDir: `dist`，包含 `src/**`）。
+   - 在 `package.json` 增加：
+     - `build`: `tsc -p tsconfig.build.json`
+     - `start:prod`: `node dist/server/index.js`
+   - 成功标准：本地 `npm run build && npm run start:prod` 可启动，日志与路由正常。
+
+3) 健康检查端点
+   - 新增 `/health`（GET）：返回 `{ status: 'ok', uptime, db: 'ok'|'down' }`；DB 检查执行 `SELECT 1`。
+   - 成功标准：未连上 DB 时返回 503/非 200；连上 DB 返回 200。
+
+4) PM2 与系统服务
+   - 新增 `ecosystem.config.js`（`script: 'dist/server/index.js'`，`instances: 1` 起步，可扩展 cluster）。
+   - 文档覆盖 `pm2 startup`、`pm2 save`、日志查看、滚动重启、环境变量注入。
+   - 成功标准：重启后自启，日志轮转正常。
+
+5) Docker 化（可选但推荐）
+   - 新增 `Dockerfile`（多阶段：deps→build→runtime，使用 `node:20-alpine`）。
+   - 新增 `.dockerignore`。
+   - 成功标准：镜像体积可控，容器内 `npm run start:prod` 正常；支持以 `--env-file` 注入变量。
+
+6) 数据库迁移流程固化
+   - 文档明确：生产部署前执行 `npm run dr:migrate`（指向 RDS 的 `DATABASE_URL`）。
+   - 若采用容器：在 CI 任务或一次性 Job 中执行迁移，不放到应用启动时自动执行。
+
+7) 文档交付
+   - 新增 `docs/ENV.md`（后端环境变量说明）。
+   - 新增 `docs/DEPLOYMENT.md`（ECS + RDS + PM2 与 Docker 两条路径的操作手册）。
+   - 在 `README.md` 增补"生产启动命令矩阵"。
+
+### 生产命令矩阵（建议）
+- 非容器（首次/升级部署）：
+  1) 安装依赖：
+     ```bash
+     npm ci --omit=dev=false
+     ```
+  2) 构建：
+     ```bash
+     npm run build
+     ```
+  3) 迁移：
+     ```bash
+     DATABASE_URL=postgres://... npm run dr:migrate
+     ```
+  4) 启动（一次性）：
+     ```bash
+     npm run start:prod
+     ```
+  5) 启动（PM2 守护）：
+     ```bash
+     pm2 start dist/server/index.js --name cbt-api
+     pm2 save
+     ```
+
+- 容器：
+  1) 构建镜像：
+     ```bash
+     docker build -t cbt-simulator:latest .
+     ```
+  2) 迁移（Job/一次性容器）：
+     ```bash
+     docker run --rm --env-file .env.production cbt-simulator:latest \
+       sh -lc "npm run dr:migrate"
+     ```
+  3) 运行：
+     ```bash
+     docker run -d --name cbt-api -p 3000:3000 --env-file .env.production cbt-simulator:latest
+     ```
+
+### 健康检查与可观测性建议
+- 探针：
+  - Liveness → `/health?probe=liveness`：仅进程与事件循环自检（200 即存活）。
+  - Readiness → `/health`：包含 DB ping；失败返回非 2xx。
+- 日志：保留 Fastify/pino 默认结构化输出；生产建议 JSON 输出，交由日志系统采集。
+- 指标（后续迭代）：暴露 p95/p99、错误率、上游 AI 调用状态。
+
+### 安全与合规
+- 强制设置 `JWT_SECRET` 与数据库 SSL CA（RDS/自建开启 SSL）。
+- 最小权限：RDS 业务账号仅具 DML/必要 DDL 权限；生产迁移可用临时高权限账号。
+- CORS：生产将 `origin` 配置为白名单域名。
+
+### 风险与回滚
+- 直接用 `tsx` 运行 TS 在部分云宿主运行良好，但建议统一为构建后启动，降低可变性。
+- `moduleResolution: Bundler` 在 TS 构建下通常无碍，但需在执行环境验证 Node ESM 解析；如遇问题可收敛 `module`/`moduleResolution` 于 NodeNext。
+- 回滚：保留上一版本镜像/构建产物与迁移版本号，按"先停新→切旧→必要时回滚迁移"流程执行。
+
+### Open Questions（请确认）
+1) 首选部署路径：PM2（非容器）还是 Docker？（也可双轨）
+2) Node 版本锁定为 20 LTS 是否满足你们的云宿主与 CI？
+3) 是否需要多实例（PM2 cluster / K8s HPA）方案与 Nginx/SLB 配置样例？
+4) `/health` 是否需要鉴权或内网限定？（通常对外 200 仅返回最小信息）
+
+### Deliverables（本轮实现产物清单）
+- `.env.example`（后端）
+- `tsconfig.build.json`
+- `package.json`：`engines`、`packageManager`、`build`、`start:prod`
+- 健康检查路由（`/health`）
+- `ecosystem.config.js`（PM2，可选）
+- `Dockerfile` 与 `.dockerignore`（可选）
+- 文档：`docs/ENV.md`、`docs/DEPLOYMENT.md`、`README.md` 生产启动命令矩阵
+
+### Final Decisions（为减少报错与维护成本，默认选择）
+- 部署路径：优先 Docker（避免环境漂移），保留 PM2 作为非容器备选。
+- Node 版本：锁定 Node 20 LTS（示例 `v20.17.0`）。
+- 健康检查：`/health` 对公网可访问，仅返回最小必要信息；可在反向代理层做限速与缓存。
+- 数据库 SSL：生产强制 `sslmode=require`；如需，挂载 RDS CA 文件并通过 `PGSSLROOTCERT`/`DATABASE_SSL_CA` 指定。
+- 迁移执行：与应用启动解耦，作为部署流程中的独立步骤（CI/一次性 Job）。
+
+### Project Status Board（Deployment）
+- [ ] 新增 `.env.example`
+- [ ] 新增 `tsconfig.build.json`
+- [ ] 更新 `package.json`（engines/packageManager/build/start:prod）
+- [ ] 新增 `/health` 路由（含 DB ping）
+- [ ] 新增 `Dockerfile` 与 `.dockerignore`
+- [ ]（可选）新增 `ecosystem.config.js`（PM2）
+- [ ] 新增并完善 `docs/ENV.md`、`docs/DEPLOYMENT.md`、更新 `README.md`
+- [ ] 本地验证：`build → migrate → start` 与 Docker 运行
+
+## Planner – 前端（Next.js）生产部署与对齐方案（`cbt-simulator-front/web`）
+
+### Background and Motivation
+- 现状：Next 15 + React 19，使用 Turbopack；`NEXT_PUBLIC_API_BASE_URL` 经 `.env.*` 注入；构建与启动脚本已存在，但未锁定 Node/npm；缺少生产部署文档与容器化文件。
+- 目标：对齐后端的版本与部署策略，提供 Docker（推荐）与 PM2（非容器）两条路，以及清晰的 ENV 文档与命令矩阵。
+
+### Current Findings（只读审计）
+- `web/package.json`：`dev/build/start` 均带 `--turbopack`；依赖仅 next/react/react-dom；devDeps 有 eslint/tailwind v4。
+- `web/next.config.ts`：构建容忍 TS/ESLint 错误；无额外配置。
+- `web/src/services/http.ts`：API 基址来自 `NEXT_PUBLIC_API_BASE_URL`，有一次 429 重试与超时。
+- `README-ENV.md`：已说明 dev/production 环境变量。
+
+### 环境变量（前端）
+- `NEXT_PUBLIC_API_BASE_URL`（必需）：后端 API 基址（生产建议指向 HTTPS 域名）。
+- （可选）`NEXT_PUBLIC_SENTRY_DSN` 等观测类变量（如采用）。
+
+### Success Criteria
+1) 前端 `web/package.json` 补充 `engines` 与 `packageManager`，与后端一致（Node 20 LTS / npm@10）。
+2) 新增 `docs/DEPLOYMENT.md`（前端）与 `README.md` 更新：Docker/PM2 部署、环境变量、命令矩阵。
+3) 新增 `Dockerfile` 与 `.dockerignore`（前端），容器内通过 `next start` 提供 3001 端口。
+4) 确认 `next.config.ts` 支持生产忽略构建错误仅限早期阶段，后续可收紧；本轮维持现状以降低上线阻力。
+
+### High-level Task Breakdown（前端）
+1) `web/package.json`：增加
+   - `engines`: `{ node: ">=20 <23", npm: ">=10" }`
+   - `packageManager`: `"npm@10"`
+   - 确认脚本：`dev/build/start` 已满足需求（生产 `next start -p 3001`）。
+2) Docker 化
+   - `Dockerfile`（多阶段：deps→build→runtime），`EXPOSE 3001`，`CMD next start -p 3001`。
+   - `.dockerignore` 最小化上下文。
+3) 文档
+   - `web/README.md`：简化"Getting Started"并加入命令矩阵。
+   - `README-ENV.md`：保留，补充生产/预发 `.env.production/.env.staging` 样例与与后端端口对齐说明。
+   - 新增 `docs/DEPLOYMENT.md`（前端）：部署步骤与 Nginx/反代示例。
+
+### 生产命令矩阵（前端建议）
+- 非容器：
+  - 构建：`npm run build`
+  - 启动：`npm run start`（端口 3001）
+- 容器：
+  - 构建镜像：`docker build -t cbt-frontend:latest ./web`
+  - 运行：`docker run -d --name cbt-web -p 3001:3001 --env-file .env.production cbt-frontend:latest`
+
+### Open Questions（前端）
+1) 是否需要集成 Sentry/监控脚本（DSN 来自 `NEXT_PUBLIC_SENTRY_DSN`）？
+2) 是否需要将 `eslint/typescript` 构建错误从忽略改为严格（逐步收紧）？
+
+

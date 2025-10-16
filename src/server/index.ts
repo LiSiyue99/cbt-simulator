@@ -9,6 +9,8 @@ import { registerAdminRoutes } from './routes/admin';
 import { registerAssignmentRoutes } from './routes/assignments';
 import authPlugin from './plugins/auth';
 import { registerAssistantClassRoutes } from './routes/assistantClass';
+import { createDb } from '../db/client';
+import { sql } from 'drizzle-orm';
 
 export async function buildServer() {
   const app = Fastify({
@@ -38,6 +40,24 @@ export async function buildServer() {
   await registerAssignmentRoutes(app);
   await registerAssistantClassRoutes(app);
   // ensure playground routes are registered via assistant routes module (already included)
+
+  // 健康检查：liveness/readiness
+  // - GET /health?probe=liveness 仅检查进程存活
+  // - GET /health            额外检查数据库连接
+  app.get('/health', async (req, reply) => {
+    const probe = (req.query as any)?.probe;
+    const uptime = process.uptime();
+    if (probe === 'liveness') {
+      return reply.send({ status: 'ok', uptime });
+    }
+    try {
+      const db = createDb();
+      await (db as any).execute(sql`select 1`);
+      return reply.send({ status: 'ok', uptime, db: 'ok' });
+    } catch (e: any) {
+      return reply.status(503).send({ status: 'degraded', uptime, db: 'down' });
+    }
+  });
 
   return app;
 }

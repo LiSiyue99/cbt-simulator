@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "sourceMap": false,
+    "declaration": false,
+    "noEmit": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/tests/**", "drizzle/**", "node_modules/**"]
+}
