@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>aiforcbt - 学生端</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>aiforcbt.online 学生端</h1>
+      <div id="user-info"></div>
+    </header>
+
+    <main>
+      <section id="login-section" class="card">
+        <h2>登录</h2>
+        <div class="row">
+          <label>邮箱：</label>
+          <input id="email-input" type="email" placeholder="你的邮箱" />
+          <button id="btn-request-code">获取验证码</button>
+        </div>
+        <div class="row">
+          <label>验证码：</label>
+          <input id="code-input" type="text" placeholder="6位验证码" />
+          <button id="btn-verify-code">登录</button>
+        </div>
+        <p id="login-hint" class="hint"></p>
+      </section>
+
+      <section id="visitor-section" class="card hidden">
+        <h2>访客与会话</h2>
+        <div class="row">
+          <label>当前访客：</label>
+          <select id="visitor-select"></select>
+          <button id="btn-refresh-visitor">刷新</button>
+        </div>
+        <div class="row">
+          <button id="btn-resume-or-start">继续/开始会话</button>
+          <span id="session-label" class="hint"></span>
+        </div>
+      </section>
+
+      <section id="chat-section" class="card hidden">
+        <h2>CBT Chatbot 对话</h2>
+        <div id="chat-history" class="chat"></div>
+        <div class="row">
+          <input id="chat-input" type="text" placeholder="输入与AI访客对话内容" />
+          <button id="btn-send">发送</button>
+          <button id="btn-finalize">结束本次会话</button>
+        </div>
+        <p id="chat-hint" class="hint"></p>
+      </section>
+
+      <section id="homework-section" class="card hidden">
+        <h2>互动反馈（本次作业）</h2>
+        <div id="homework-fields"></div>
+        <div class="row">
+          <button id="btn-submit-homework">提交作业</button>
+          <span id="homework-hint" class="hint"></span>
+        </div>
+      </section>
+
+      <section id="sessions-section" class="card hidden">
+        <h2>历史会话</h2>
+        <div class="row">
+          <button id="btn-load-sessions">加载历史</button>
+        </div>
+        <ul id="sessions-list"></ul>
+      </section>
+    </main>
+
+    <footer>
+      <small>© aiforcbt.online</small>
+    </footer>
+
+    <script src="./app.js"></script>
+  </body>
+  </html>
