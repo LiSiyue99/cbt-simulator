@@ -41,11 +41,33 @@ REMOTE_STATIC_DIR="/srv/www"
 #   nginx_static  → 直接由 Nginx 提供静态站点（默认）
 #   node_proxy    → 反向代理到 127.0.0.1:3001（若你有前端 Node 服务）
 FRONT_MODE="${FRONT_MODE:-nginx_static}"
+FRONT_PROXY_TARGET="${FRONT_PROXY_TARGET:-http://127.0.0.1:3001}"
 
 # 前端本地构建目录（可选）：
 # 将其设置为你的前端打包输出目录（例如 ./dist 或 ./build），脚本会自动打包并上传到远端静态根。
 # 若未设置，则使用项目内的 web/ 目录（如存在）。
 FRONT_LOCAL_DIR="${FRONT_LOCAL_DIR:-}"
+
+# 前端 Node 服务（node_proxy 模式下可自动部署/启动）
+# - FRONT_NODE_LOCAL_DIR：本机前端 Node 代码目录（可选，提供则自动打包上传）
+# - FRONT_NODE_REMOTE_DIR：远端部署目录（默认 /srv/front）
+# - FRONT_NODE_START_CMD：前端启动命令（如 "npm run start"，未设置则自动尝试）
+# - FRONT_NODE_PORT：前端服务端口（默认 3001）
+FRONT_NODE_LOCAL_DIR="${FRONT_NODE_LOCAL_DIR:-}"
+FRONT_NODE_REMOTE_DIR="${FRONT_NODE_REMOTE_DIR:-/srv/front}"
+FRONT_NODE_START_CMD="${FRONT_NODE_START_CMD:-}"
+FRONT_NODE_PORT=${FRONT_NODE_PORT:-3001}
+
+# 前端 Node 仓库（可选，CI/CD 推荐方式）
+# 设置 FRONT_NODE_REPO（git 地址，如 https://github.com/org/fe.git 或 ssh 地址），
+# 设置 FRONT_NODE_BRANCH（默认 main），脚本将在远端 ${FRONT_NODE_REMOTE_DIR} clone/pull 并启动。
+FRONT_NODE_REPO="${FRONT_NODE_REPO:-}"
+FRONT_NODE_BRANCH="${FRONT_NODE_BRANCH:-main}"
+
+# 在 node_proxy 模式下，如未显式提供 FRONT_PROXY_TARGET，则按端口填充默认值
+if [[ "${FRONT_MODE}" == "node_proxy" ]]; then
+  FRONT_PROXY_TARGET="${FRONT_PROXY_TARGET:-http://127.0.0.1:${FRONT_NODE_PORT}}"
+fi
 
 # 未显式提供 FRONT_LOCAL_DIR 时，自动探测常见构建输出目录
 if [[ -z "${FRONT_LOCAL_DIR}" ]]; then
@@ -75,6 +97,11 @@ fi
 
 # 是否在部署后执行 Drizzle 数据库迁移（谨慎使用）
 RUN_MIGRATIONS=0
+
+# 后端仓库（可选，CI/CD 推荐方式）
+# 设置 BACKEND_REPO（git 地址）与 BACKEND_BRANCH（默认 main），脚本将远端 clone/pull 到 ${REMOTE_DIR} 并启动。
+BACKEND_REPO="${BACKEND_REPO:-}"
+BACKEND_BRANCH="${BACKEND_BRANCH:-main}"
 
 ########################################
 # 工具函数
@@ -262,14 +289,20 @@ fi
 # 打包项目（排除无用内容）
 ########################################
 TS=$(date +%Y%m%d-%H%M%S)
-DEPLOY_TGZ="deploy-${APP_NAME}-${TS}.tar.gz"
-echo "[+] 打包项目为 $DEPLOY_TGZ ..."
-tar \
-  --exclude='.git' \
-  --exclude='node_modules' \
-  --exclude='.reports' \
-  --exclude="$DEPLOY_TGZ" \
-  -czf "$DEPLOY_TGZ" .
+DEPLOY_TGZ=""
+if [[ -z "${BACKEND_REPO:-}" ]]; then
+  DEPLOY_TGZ="deploy-${APP_NAME}-${TS}.tar.gz"
+  SRC_DIR="${BACKEND_LOCAL_DIR:-.}"
+  echo "[+] 打包后端目录 ${SRC_DIR} 为 $DEPLOY_TGZ ..."
+  tar \
+    --exclude='.git' \
+    --exclude='node_modules' \
+    --exclude='.reports' \
+    --exclude="$DEPLOY_TGZ" \
+    -czf "$DEPLOY_TGZ" -C "$SRC_DIR" .
+else
+  echo "[=] 检测到 BACKEND_REPO，跳过本地后端打包，改为远端 Git 部署"
+fi
 
 # 可选：打包本地前端构建目录
 FRONT_LOCAL_TGZ=""
@@ -283,6 +316,18 @@ if [[ -n "${FRONT_LOCAL_DIR:-}" ]]; then
   fi
 fi
 
+# 可选：打包本地前端 Node 服务目录（用于 node_proxy 模式）
+FRONT_NODE_TGZ=""
+if [[ -n "${FRONT_NODE_LOCAL_DIR:-}" ]]; then
+  if [[ -d "$FRONT_NODE_LOCAL_DIR" ]]; then
+    FRONT_NODE_TGZ="front-node-${TS}.tar.gz"
+    echo "[+] 打包前端 Node 服务目录 $FRONT_NODE_LOCAL_DIR 为 $FRONT_NODE_TGZ"
+    tar -czf "$FRONT_NODE_TGZ" -C "$FRONT_NODE_LOCAL_DIR" .
+  else
+    echo "[!] FRONT_NODE_LOCAL_DIR 不存在或不是目录：$FRONT_NODE_LOCAL_DIR"
+  fi
+fi
+
 ########################################
 # 远端初始化目录
 ########################################
@@ -293,10 +338,18 @@ sshp "mkdir -p '$REMOTE_DIR' '$REMOTE_CERT_DIR' '$REMOTE_STATIC_DIR' '/etc/nginx
 # 上传包与证书
 ########################################
 echo "[+] 上传项目包与证书..."
-scpp "$DEPLOY_TGZ" "$ECS_USER@$ECS_HOST:/tmp/$DEPLOY_TGZ"
+if [[ -n "${DEPLOY_TGZ:-}" && -f "$DEPLOY_TGZ" ]]; then
+  scpp "$DEPLOY_TGZ" "$ECS_USER@$ECS_HOST:/tmp/$DEPLOY_TGZ"
+else
+  echo "[=] 本次不上传后端包（使用 BACKEND_REPO 远端拉取）"
+fi
 if [[ -n "$FRONT_LOCAL_TGZ" && -f "$FRONT_LOCAL_TGZ" ]]; then
   echo "[+] 上传前端构建包 $FRONT_LOCAL_TGZ"
   scpp "$FRONT_LOCAL_TGZ" "$ECS_USER@$ECS_HOST:/tmp/$FRONT_LOCAL_TGZ"
+fi
+if [[ -n "$FRONT_NODE_TGZ" && -f "$FRONT_NODE_TGZ" ]]; then
+  echo "[+] 上传前端 Node 服务包 $FRONT_NODE_TGZ"
+  scpp "$FRONT_NODE_TGZ" "$ECS_USER@$ECS_HOST:/tmp/$FRONT_NODE_TGZ"
 fi
 if [[ "$REMOTE_PG_CA_EXISTS" != "1" ]]; then
   scpp "$PG_CA_LOCAL" "$ECS_USER@$ECS_HOST:$PG_CA_REMOTE"
@@ -320,7 +373,7 @@ fi
 # 远端执行：安装基础环境、Node、pm2、tsx；解包；配置 .env；启动服务；配置 Nginx
 ########################################
 echo "[+] 执行远端部署流程..."
-sshp "DEPLOY_TGZ='$DEPLOY_TGZ' API_DOMAIN='$API_DOMAIN' WEB_DOMAIN='$WEB_DOMAIN' WEB_DOMAIN_ALT='$WEB_DOMAIN_ALT' PG_CA_REMOTE='$PG_CA_REMOTE' RUN_MIGRATIONS='$RUN_MIGRATIONS' FRONT_MODE='$FRONT_MODE' bash -s" <<'REMOTE_EOF'
+sshp "DEPLOY_TGZ='$DEPLOY_TGZ' API_DOMAIN='$API_DOMAIN' WEB_DOMAIN='$WEB_DOMAIN' WEB_DOMAIN_ALT='$WEB_DOMAIN_ALT' PG_CA_REMOTE='$PG_CA_REMOTE' RUN_MIGRATIONS='$RUN_MIGRATIONS' FRONT_MODE='$FRONT_MODE' FRONT_PROXY_TARGET='$FRONT_PROXY_TARGET' FRONT_NODE_REMOTE_DIR='$FRONT_NODE_REMOTE_DIR' FRONT_NODE_PORT='$FRONT_NODE_PORT' FRONT_NODE_START_CMD='$FRONT_NODE_START_CMD' FRONT_NODE_TGZ='$FRONT_NODE_TGZ' FRONT_NODE_REPO='$FRONT_NODE_REPO' FRONT_NODE_BRANCH='$FRONT_NODE_BRANCH' BACKEND_REPO='$BACKEND_REPO' BACKEND_BRANCH='$BACKEND_BRANCH' bash -s" <<'REMOTE_EOF'
 set -euo pipefail
 
 detect_pkg_mgr() {
@@ -376,9 +429,24 @@ REMOTE_CERT_DIR="/etc/nginx/certs"
 REMOTE_STATIC_DIR="/srv/www"
 PG_CA_REMOTE="${PG_CA_REMOTE:-/etc/ssl/certs/ApsaraDB-CA-Chain.pem}"
 
-echo "[+] 解包到 $REMOTE_DIR"
+echo "[+] 准备后端部署目录 $REMOTE_DIR"
 mkdir -p "$REMOTE_DIR"
-tar -xzf "/tmp/$DEPLOY_TGZ" -C "$REMOTE_DIR"
+if [[ -n "${DEPLOY_TGZ:-}" && -f "/tmp/${DEPLOY_TGZ}" ]]; then
+  echo "[+] 解包后端包到 $REMOTE_DIR: /tmp/${DEPLOY_TGZ}"
+  tar -xzf "/tmp/${DEPLOY_TGZ}" -C "$REMOTE_DIR"
+elif [[ -n "${BACKEND_REPO:-}" ]]; then
+  echo "[+] 使用 Git 部署后端：${BACKEND_REPO} (${BACKEND_BRANCH:-main})"
+  if [[ -d "$REMOTE_DIR/.git" ]]; then
+    git -C "$REMOTE_DIR" fetch --all
+    git -C "$REMOTE_DIR" checkout "${BACKEND_BRANCH:-main}"
+    git -C "$REMOTE_DIR" reset --hard "origin/${BACKEND_BRANCH:-main}" || git -C "$REMOTE_DIR" pull --ff-only
+  else
+    rm -rf "$REMOTE_DIR"/* || true
+    git clone --depth 1 -b "${BACKEND_BRANCH:-main}" "${BACKEND_REPO}" "$REMOTE_DIR"
+  fi
+else
+  echo "[!] 未提供后端包或 BACKEND_REPO，跳过代码解包/拉取"
+fi
 
 cd "$REMOTE_DIR"
 
@@ -441,7 +509,93 @@ if [[ "${FRONT_MODE:-nginx_static}" == "nginx_static" ]]; then
   fi
 fi
 
+# 前端 Node 服务部署与启动（仅在 FRONT_MODE=node_proxy）
+if [[ "${FRONT_MODE:-nginx_static}" == "node_proxy" ]]; then
+  FRONT_NODE_REMOTE_DIR="${FRONT_NODE_REMOTE_DIR:-/srv/front}"
+  FRONT_NODE_PORT="${FRONT_NODE_PORT:-3001}"
+  mkdir -p "$FRONT_NODE_REMOTE_DIR"
+  if [[ -n "${FRONT_NODE_REPO:-}" ]]; then
+    echo "[+] 使用 Git 部署前端 Node：${FRONT_NODE_REPO} (${FRONT_NODE_BRANCH:-main})"
+    if [[ -d "$FRONT_NODE_REMOTE_DIR/.git" ]]; then
+      git -C "$FRONT_NODE_REMOTE_DIR" fetch --all
+      git -C "$FRONT_NODE_REMOTE_DIR" checkout "${FRONT_NODE_BRANCH:-main}"
+      git -C "$FRONT_NODE_REMOTE_DIR" reset --hard "origin/${FRONT_NODE_BRANCH:-main}" || git -C "$FRONT_NODE_REMOTE_DIR" pull --ff-only
+    else
+      rm -rf "$FRONT_NODE_REMOTE_DIR"/* || true
+      git clone --depth 1 -b "${FRONT_NODE_BRANCH:-main}" "${FRONT_NODE_REPO}" "$FRONT_NODE_REMOTE_DIR"
+    fi
+  elif [[ -n "${FRONT_NODE_TGZ:-}" && -f "/tmp/${FRONT_NODE_TGZ}" ]]; then
+    echo "[+] 解压前端 Node 服务包到 $FRONT_NODE_REMOTE_DIR"
+    tar -xzf "/tmp/${FRONT_NODE_TGZ}" -C "$FRONT_NODE_REMOTE_DIR"
+  else
+    echo "[=] 未提供 FRONT_NODE_TGZ，本次不上传前端代码。若远端已存在代码，将直接启动。"
+  fi
+
+  if [[ -f "$FRONT_NODE_REMOTE_DIR/package.json" ]]; then
+    echo "[+] 安装前端依赖 (Node)"
+    cd "$FRONT_NODE_REMOTE_DIR"
+    npm install --legacy-peer-deps
+    # 构建前端（针对 Next.js 添加无 Turbopack 的生产构建回退）
+    if node -e "const p=require('./package.json'); const d=Object.assign({}, p.dependencies||{}, p.devDependencies||{}); process.exit(d.next ? 0 : 1)" >/dev/null 2>&1; then
+      if [[ -x "./node_modules/.bin/next" ]]; then
+        echo "[+] 检测到 Next.js，执行 'next build'（禁用 Turbopack）用于生产"
+        NEXT_TELEMETRY_DISABLED=1 ./node_modules/.bin/next build || echo "[!] next build 失败，将尝试使用项目自带构建脚本"
+      else
+        echo "[=] 未找到 next 可执行文件，回退到 'npm run build --if-present'"
+        npm run build --if-present || true
+      fi
+    else
+      # 其他框架（Vite/React 等）沿用项目构建脚本
+      npm run build --if-present || true
+    fi
+
+    # 若 Next 生产构建缺失（例如项目脚本使用 Turbopack 未生成 BUILD_ID），提示并允许后续 dev 兜底
+    if [[ -d .next ]] && [[ ! -f .next/BUILD_ID ]]; then
+      echo "[!] 未发现 .next/BUILD_ID，Next 生产构建可能缺失（例如 Turbopack）。将尝试使用 dev 作为临时兜底。"
+    fi
+    # 写入 .env 中的 PORT/HOST，如不存在
+    if [[ ! -f .env ]]; then
+      echo -e "HOST=127.0.0.1\nPORT=${FRONT_NODE_PORT}" > .env
+    else
+      grep -qE '^PORT=' .env || echo "PORT=${FRONT_NODE_PORT}" >> .env
+      grep -qE '^HOST=' .env || echo "HOST=127.0.0.1" >> .env
+    fi
+
+    # 启动前端服务（pm2）
+    pm2 delete front-web || true
+    START_CMD="${FRONT_NODE_START_CMD:-}"
+    if [[ -z "$START_CMD" ]]; then
+      # 自动选择启动脚本
+      HAS_BUILD_ID=0
+      if [[ -d ".next" ]] && [[ -f ".next/BUILD_ID" ]]; then HAS_BUILD_ID=1; fi
+      if [[ $HAS_BUILD_ID -eq 1 ]] && node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.start ? 0 : 1)" >/dev/null 2>&1; then
+        START_CMD="npm run start"
+      elif [[ $HAS_BUILD_ID -eq 1 ]] && [[ -x "./node_modules/.bin/next" ]]; then
+        # 若无显式 start 脚本但存在 Next 生产构建，直接使用 next 启动
+        START_CMD="./node_modules/.bin/next start -p ${FRONT_NODE_PORT}"
+      elif node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.dev ? 0 : 1)" >/dev/null 2>&1; then
+        START_CMD="npm run dev"
+      elif [[ -f "server.js" ]]; then
+        START_CMD="node server.js"
+      else
+        echo "[!] 无法自动识别前端启动命令，请设置 FRONT_NODE_START_CMD" >&2
+        START_CMD=""
+      fi
+    fi
+
+    if [[ -n "$START_CMD" ]]; then
+      echo "[+] 以 pm2 启动前端：$START_CMD (PORT=${FRONT_NODE_PORT}, HOST=127.0.0.1)"
+      pm2 delete front-web || true
+      pm2 start bash --name front-web --cwd "$FRONT_NODE_REMOTE_DIR" -- -lc "PORT=${FRONT_NODE_PORT} HOST=127.0.0.1 ${START_CMD}"
+      pm2 save
+    fi
+  else
+    echo "[!] 未发现 package.json，跳过前端 Node 服务启动：$FRONT_NODE_REMOTE_DIR"
+  fi
+fi
+
 # 安装依赖（包含 dev，确保 drizzle/tsx 可用）
+cd "$REMOTE_DIR"
 npm install --legacy-peer-deps
 
 # 可选：数据库迁移
@@ -462,6 +616,8 @@ echo "[+] 写入 Nginx 站点配置"
 API_DOMAIN="${API_DOMAIN:-api.aiforcbt.online}"
 WEB_DOMAIN="${WEB_DOMAIN:-aiforcbt.online}"
 WEB_DOMAIN_ALT="${WEB_DOMAIN_ALT:-www.aiforcbt.online}"
+FRONT_MODE="${FRONT_MODE:-nginx_static}"
+FRONT_PROXY_TARGET="${FRONT_PROXY_TARGET:-http://127.0.0.1:3001}"
 
 cat > /etc/nginx/conf.d/${API_DOMAIN}.conf <<EOF_API
 server {
@@ -494,7 +650,8 @@ server {
 EOF_API
 
 # 前端：默认静态托管；如需 Node 代理，请将 FRONT_MODE 设置为 node_proxy 并自行启动 3001 服务
-cat > /etc/nginx/conf.d/${WEB_DOMAIN}.conf <<EOF_WEB
+if [[ "$FRONT_MODE" == "node_proxy" ]]; then
+  cat > /etc/nginx/conf.d/${WEB_DOMAIN}.conf <<EOF_WEB
 server {
   listen 80;
   server_name ${WEB_DOMAIN} ${WEB_DOMAIN_ALT};
@@ -509,7 +666,48 @@ server {
   ssl_certificate_key ${REMOTE_CERT_DIR}/web.key;
   ssl_protocols TLSv1.2 TLSv1.3;
 
-  # 默认静态模式
+  location / {
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_pass ${FRONT_PROXY_TARGET};
+    proxy_connect_timeout 30s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+  }
+
+  # 将前端 /api/ 相对路径代理到后端 3000 并移除 /api 前缀
+  location /api/ {
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    rewrite ^/api/(.*)$ /$1 break;
+    proxy_pass http://127.0.0.1:3000;
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+  }
+}
+EOF_WEB
+else
+  cat > /etc/nginx/conf.d/${WEB_DOMAIN}.conf <<EOF_WEB
+server {
+  listen 80;
+  server_name ${WEB_DOMAIN} ${WEB_DOMAIN_ALT};
+  return 301 https://\$host\$request_uri;
+}
+
+server {
+  listen 443 ssl http2;
+  server_name ${WEB_DOMAIN} ${WEB_DOMAIN_ALT};
+
+  ssl_certificate ${REMOTE_CERT_DIR}/web.pem;
+  ssl_certificate_key ${REMOTE_CERT_DIR}/web.key;
+  ssl_protocols TLSv1.2 TLSv1.3;
+
+  # 静态模式
   root ${REMOTE_STATIC_DIR};
   index index.html;
 
@@ -518,6 +716,7 @@ server {
   }
 }
 EOF_WEB
+fi
 
 # 清理历史重复配置（避免 server_name 冲突导致的重复加载）
 cleanup_conf() {
@@ -575,6 +774,30 @@ if command -v systemctl >/dev/null 2>&1; then
   pm2 startup -u root --hp /root || true
   pm2 save || true
 fi
+
+echo "[✓] 部署完成"
+echo "后端 API：PM2 名称 cbt-api，目录 $REMOTE_DIR → http://127.0.0.1:3000"
+if [[ -n "${BACKEND_REPO:-}" ]]; then
+  echo "后端来源：Git ${BACKEND_REPO} 分支 ${BACKEND_BRANCH:-main}"
+else
+  echo "后端来源：本机打包上传"
+fi
+echo "前端模式：$FRONT_MODE"
+if [[ "$FRONT_MODE" == "node_proxy" ]]; then
+  echo "前端 Node：PM2 名称 front-web，目录 ${FRONT_NODE_REMOTE_DIR:-/srv/front} → 端口 ${FRONT_NODE_PORT:-3001}"
+  if [[ -n "${FRONT_NODE_REPO:-}" ]]; then
+    echo "前端来源：Git ${FRONT_NODE_REPO} 分支 ${FRONT_NODE_BRANCH:-main}"
+  elif [[ -n "${FRONT_NODE_TGZ:-}" ]]; then
+    echo "前端来源：本机打包上传"
+  else
+    echo "前端来源：远端已有代码（未上传/未拉取）"
+  fi
+  echo "Nginx 反代：${WEB_DOMAIN} → ${FRONT_PROXY_TARGET}"
+else
+  echo "静态根：${REMOTE_STATIC_DIR}"
+  echo "Nginx 静态站：${WEB_DOMAIN} served from ${REMOTE_STATIC_DIR}"
+fi
+echo "API 反代：${API_DOMAIN} → http://127.0.0.1:3000"
 
 echo "[+] 远端部署完成"
 REMOTE_EOF
