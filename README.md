@@ -8,6 +8,33 @@ npm ci
 npm run db:up         # 可选：启动本地 Postgres (docker-compose)
 cp docs/ENV.md .env   # 仅示例，实际请手动按需创建 .env
 npm run dev:api
+## 部署脚本（离线，无需 git pull）
+
+已在 `scripts/` 目录新增两份本地触发脚本，对应 ECS 上的远端执行脚本样例：
+
+- 本地执行：
+  - `scripts/deploy-api-local.sh`：打包上传后端并触发远端部署（不执行数据库迁移）。
+  - `scripts/deploy-web-local.sh`：打包上传前端并触发远端部署。
+
+- 远端样例（需放到 ECS 并 `chmod +x`）：
+  - `scripts/deploy-cbt-api.sample.sh` → `/root/bin/deploy-cbt-api.sh`
+  - `scripts/deploy-cbt-web.sample.sh` → `/root/bin/deploy-cbt-web.sh`
+
+使用流程：
+1) 首次在 ECS 上把两份 `*.sample.sh` 放到 `/root/bin/` 并赋权：
+   ```bash
+   scp /path/to/deploy-cbt-*.sample.sh root@<ECS>:/root/bin/
+   ssh root@<ECS> 'chmod +x /root/bin/deploy-cbt-*.sh'
+   ```
+2) 本地修改好代码后，直接运行：
+   ```bash
+   ./scripts/deploy-api-local.sh
+   ./scripts/deploy-web-local.sh
+   ```
+3) 脚本会在 ECS 侧解包至版本目录、保留 `.env.production(.local)`，用 PM2 重启并做健康检查；失败自动回滚（后端脚本包含）。
+
+注意：生产不执行数据库迁移；前端线上请使用 `.env.production(.local)` 并避免 `.env.local` 覆盖。
+
 ```
 默认端口：`http://localhost:3000`
 
