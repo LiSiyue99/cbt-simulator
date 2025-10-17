@@ -1,11 +1,11 @@
 Background and Motivation
 
-本次需求将“作业（三联/五联/任意表格）”从固定三联表升级为“按班级发包的动态表单作业”，并与会话序号严格对齐：该班第 N 次作业 = 每位学生的第 N 次 session。管理员在 Admin 端新增“作业发布与管理”分区，按班发布作业集（Homework Set），配置表单字段与窗口期；学生在管理员允许的窗口内提交；技术助教在管理员允许的窗口内通过既有“助教-学生聊天”完成批改（无需新增评分页面）。旧“三联表”接口与数据表将被移除，前后端统一迁移到新通用作业机制。
+本次需求将"作业（三联/五联/任意表格）"从固定三联表升级为"按班级发包的动态表单作业"，并与会话序号严格对齐：该班第 N 次作业 = 每位学生的第 N 次 session。管理员在 Admin 端新增"作业发布与管理"分区，按班发布作业集（Homework Set），配置表单字段与窗口期；学生在管理员允许的窗口内提交；技术助教在管理员允许的窗口内通过既有"助教-学生聊天"完成批改（无需新增评分页面）。旧"三联表"接口与数据表将被移除，前后端统一迁移到新通用作业机制。
 
 Key Challenges and Analysis
 
-- 映射关系：作业集需与每个班的 sessionNumber 严格对齐（sequenceNumber）。学生 session 的编号仍按“完成的最大编号+1”规则，作业集以 sequenceNumber 标识第几次作业。
-- 动态表单：字段支持类型足够通用且简单（全部必填、无需最小长度/选项集），需支持字段的“提示说明/占位文本”。
+- 映射关系：作业集需与每个班的 sessionNumber 严格对齐（sequenceNumber）。学生 session 的编号仍按"完成的最大编号+1"规则，作业集以 sequenceNumber 标识第几次作业。
+- 动态表单：字段支持类型足够通用且简单（全部必填、无需最小长度/选项集），需支持字段的"提示说明/占位文本"。
 - 窗口期：与全局"开窗/封窗"策略（timeWindow）解耦，作业集自身具备 studentStartAt/studentDeadline 与 assistantStartAt/assistantDeadline。管理员可直接修改该作业集的 DDL（等价于对该 package 进行时间修改）。
 - 批改模型：延续"助教与学生的聊天"作为批改载体，不新增评分/打分 UI。待批改判定逻辑需从"三联表后无助教回复"迁移为"该次作业有提交后，无助教在提交时间之后的聊天"。
 - 兼容性改造：彻底移除 `thought_records` 表与相关接口、统计和页面；将所有统计（作业已交、待批改）切换为基于新通用提交。
@@ -780,5 +780,338 @@ Risks
 ### Open Questions（前端）
 1) 是否需要集成 Sentry/监控脚本（DSN 来自 `NEXT_PUBLIC_SENTRY_DSN`）？
 2) 是否需要将 `eslint/typescript` 构建错误从忽略改为严格（逐步收紧）？
+
+## Planner – 前端软件质量对齐与"样式不丢失"保障计划（Next 15 + Tailwind v4 + shadcn/ui）
+
+### 关键风险清单（针对"上线后组件丢样式/不显示"）
+- 依赖不完整：未安装 `class-variance-authority`、`clsx`、`tailwind-merge`、`@radix-ui/react-slot`、`lucide-react`、`tailwindcss-animate` 等导致组件样式或动画缺失。
+- 组件产物缺失：`src/components/ui/*` 为空（目前仓库即为空），UI 实际引用了别名 `@/components/ui`，会在运行时报找不到或回退为无样式。
+- Tailwind v4 配置不当：未使用 `@tailwindcss/postcss` 或 `globals.css` 中未引入 tailwind 指令/动画，导致构建无样式。
+- 构建与运行环境差异：本地 Node 版本与线上不同导致报警或未知行为；Docker 未包含 `.next`/public 等必要产物。
+- 环境变量错误：`NEXT_PUBLIC_API_BASE_URL` 指向 HTTP 或错误域导致请求失败，页面空白。
+
+### 质量对齐措施（必须落实）
+1) 依赖与版本锁定
+   - `web/package.json` 已设置 `engines` Node >=20 <23 与 `packageManager: npm@10`，线上统一 Node 20。
+   - 安装 shadcn 常见运行时依赖：
+     ```bash
+     npm i class-variance-authority clsx tailwind-merge @radix-ui/react-slot lucide-react tailwindcss-animate --save
+     ```
+2) 组件落地（必要）
+   - 使用官方 CLI 生成所需组件至 `src/components/ui/*`，确保与 `components.json` 别名一致：
+     ```bash
+     # 示例：在 web 目录内
+     npx shadcn@latest add button card input textarea label select checkbox dialog dropdown-menu form toast tooltip tabs alert accordion avatar breadcrumb calendar popover separator skeleton switch table textarea toast toggle tooltip navigation-menu menubar pagination progress radio-group resizable scroll-area slider sonner textarea
+     ```
+   - 若只用到部分组件，仅添加所需项即可；生成后应存在实际 TSX 文件。
+3) Tailwind v4 与 PostCSS
+   - 已配置 `postcss.config.mjs`：`plugins: ["@tailwindcss/postcss"]`。
+   - `globals.css` 顶部包含：`@import "tailwindcss";` 与动画库导入（已见 `tw-animate-css`）。
+4) 构建校验与运行前检查
+   - `next build --turbopack` 日志不得出现依赖缺失（cva/clsx 等）与无法解析 `@/components/ui/*`。
+   - 构建后运行 `next start`（3001）并本地访问关键页面（登录、dashboard、组件密集页）确认样式。
+5) 运行时可观测性与健康检查
+   - 新增轻量健康检查 API：`/api/health`（返回 200 + 版本/BUILD_ID），供 Nginx 上游被动探测。
+   - 在 UI 入口页注入版本信息（来自 `.next/BUILD_ID` 或环境变量），方便对比线上/本地构建。
+6) Nginx 与静态资源
+   - 确保反代到 `127.0.0.1:3001`；启用 `http2` 与压缩；`/favicon.ico`、`/_next/static/` 资源可 200。
+
+### 验收脚本（上线后自动化核查）
+```bash
+# 1) 健康
+curl -fsSL https://aiforcbt.online/api/health | jq .
+
+# 2) 静态资源
+curl -I https://aiforcbt.online/_next/static/chunks/webpack-* || true
+
+# 3) 关键页面快照（检测 200 与体积）
+for p in / /login /dashboard; do
+  code=$(curl -sk -o /dev/null -w "%{http_code}" https://aiforcbt.online$p)
+  echo "$p => $code"
+done
+```
+
+### 回滚与故障定位
+- 若组件样式缺失：
+  1) 检查 `web/src/components/ui/*` 是否存在；若为空，按上文 CLI 重新生成。
+  2) `docker logs cbt-web` 检查 cva/clsx 等依赖缺失与 Next/Tailwind 构建警告。
+  3) 确认 `globals.css` 已引入 tailwind；`postcss.config.mjs` 使用 `@tailwindcss/postcss`。
+- 若仅线上异常：核对容器镜像是否来自最新构建（BUILD_ID 对比）；必要时回滚到上一镜像。
+
+### 待办（前端质量强化）
+- [ ] 安装并锁定 shadcn 运行时依赖（见上方列表）
+- [ ] 使用 shadcn CLI 生成实际组件至 `src/components/ui/*`
+- [ ] 新增 `/api/health` 路由返回 `{ ok: true, buildId }`
+- [ ] 本地与容器内构建校验（无缺包/别名错误）
+- [ ] 上线后执行"验收脚本"并截图存档
+
+
+## Planner – 阿里云 ECS/RDS 部署落地方案（域名/证书/Nginx/容器）
+
+### 背景与输入对齐
+- 域名：前端 `aiforcbt.online`，后端 `api.aiforcbt.online`。
+- 证书：分别保存在本地目录（ECS 上将统一放置到 `/etc/nginx/certs/<domain>/`）。由于本地无法列目录，请在执行时确认证书文件名（通常为 `fullchain.pem` 与 `privkey.pem` 或平台给出的 `.cer/.key`）。
+- ECS 访问：`ssh -i /Users/siyue/Downloads/ecs-root-2025.pem root@60.205.189.9`。
+- RDS：使用内网地址，`sslmode=disable`（同 VPC 内网通信，安全组白名单到 ECS）。
+- 前端 `.env.production`：`NEXT_PUBLIC_API_BASE_URL=https://api.aiforcbt.online`。
+- 后端 `.env.production`：使用你提供的 `DASHSCOPE_API_KEY(S)`、`DATABASE_URL`（含 `sslmode=disable`）。
+
+### 成功标准（本轮交付验收）
+1) ECS 上通过 Docker 运行后端容器（3000）与前端容器（3001），`docker ps` 显示均为 `healthy`/`running`。
+2) Nginx 反代生效：
+   - `https://api.aiforcbt.online/health` 返回 200 且 `{ status: 'ok' }`。
+   - `https://aiforcbt.online` 正常加载，shadcn 组件样式与交互完整。
+3) 重要参数确认：RDS 连接成功；ECS 只开放 80/443（22 用于管理），应用端口不对公网暴露。
+
+### 部署步骤（推荐 Docker + Nginx）
+1) 基础准备（ECS）
+```bash
+# 以 root 登录后执行
+apt-get update -y && apt-get install -y docker.io nginx
+systemctl enable --now docker
+
+# 目录准备
+mkdir -p /opt/cbt/{api,web} /etc/nginx/certs/{aiforcbt.online,api.aiforcbt.online}
+
+# 将本地证书上传到对应目录（示例：按各平台文件名替换）
+# scp -i /Users/siyue/Downloads/ecs-root-2025.pem <local_cert_files> root@60.205.189.9:/etc/nginx/certs/aiforcbt.online/
+# scp -i /Users/siyue/Downloads/ecs-root-2025.pem <local_cert_files> root@60.205.189.9:/etc/nginx/certs/api.aiforcbt.online/
+```
+
+2) 后端部署（`cbt-simulator`）
+```bash
+cd /opt/cbt/api
+git clone https://github.com/LiSiyue99/cbt-simulator.git . || true
+git pull --rebase
+
+# 写入生产环境变量（勿把秘钥写入仓库）
+cat > .env.production << 'ENV'
+# 仅示例，占位；请替换为你的实际值
+DATABASE_URL=postgresql://...:5432/cbt_ai_visitor?sslmode=disable
+DASHSCOPE_API_KEY=...
+DASHSCOPE_API_KEYS=...
+RATELIMIT_MAX=3000
+RATELIMIT_WINDOW=1 minute
+ENV
+
+# 构建镜像并初始化数据库
+docker build -t cbt-simulator:latest /opt/cbt/api
+docker run --rm --env-file .env.production cbt-simulator:latest sh -lc "npm run dr:migrate"
+
+# 启动（随宿主重启自动拉起）
+docker run -d --name cbt-api \
+  --restart=always \
+  --env-file .env.production \
+  -p 127.0.0.1:3000:3000 \
+  cbt-simulator:latest
+```
+
+3) 前端部署（`cbt-simulator-front/web`）
+```bash
+cd /opt/cbt/web
+git clone https://github.com/LiSiyue99/cbt-simulator-front.git . || true
+git pull --rebase
+
+# 关键：补齐 shadcn 依赖后再构建（若此前缺失导致 UI 不显示）
+cd web
+echo "NEXT_PUBLIC_API_BASE_URL=https://api.aiforcbt.online" > .env.production
+
+# 建议安装常见 shadcn 运行时依赖（如未安装）
+npm i class-variance-authority clsx tailwind-merge @radix-ui/react-slot lucide-react tailwindcss-animate --save
+
+docker build -t cbt-frontend:latest /opt/cbt/web
+docker run -d --name cbt-web \
+  --restart=always \
+  --env-file .env.production \
+  -p 127.0.0.1:3001:3001 \
+  cbt-frontend:latest
+```
+
+4) Nginx 反向代理与 HTTPS（两域名）
+```nginx
+# /etc/nginx/sites-available/cbt.conf
+
+server {
+  listen 80;
+  server_name aiforcbt.online;
+  return 301 https://$host$request_uri;
+}
+
+server {
+  listen 443 ssl http2;
+  server_name aiforcbt.online;
+  ssl_certificate     /etc/nginx/certs/aiforcbt.online/fullchain.pem;  # ← 请替换
+  ssl_certificate_key /etc/nginx/certs/aiforcbt.online/privkey.pem;    # ← 请替换
+
+  location / {
+    proxy_pass http://127.0.0.1:3001;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}
+
+server {
+  listen 80;
+  server_name api.aiforcbt.online;
+  return 301 https://$host$request_uri;
+}
+
+server {
+  listen 443 ssl http2;
+  server_name api.aiforcbt.online;
+  ssl_certificate     /etc/nginx/certs/api.aiforcbt.online/fullchain.pem;  # ← 请替换
+  ssl_certificate_key /etc/nginx/certs/api.aiforcbt.online/privkey.pem;    # ← 请替换
+
+  # 长请求（AI）需要更长超时
+  proxy_read_timeout  300s;
+  proxy_send_timeout  300s;
+  client_max_body_size 10m;
+
+  location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}
+```
+```bash
+ln -sf /etc/nginx/sites-available/cbt.conf /etc/nginx/sites-enabled/cbt.conf
+nginx -t && systemctl reload nginx
+```
+
+5) 验证与排错
+```bash
+curl -I https://api.aiforcbt.online/health
+curl -I https://aiforcbt.online
+
+docker logs --tail=200 cbt-api
+docker logs --tail=200 cbt-web
+journalctl -u nginx --no-pager -n 100
+```
+
+### Shadcn/UI 显示问题专项修复建议
+- 统一依赖：确保安装 `class-variance-authority`、`clsx`、`tailwind-merge`、`@radix-ui/react-slot`、`lucide-react`、`tailwindcss-animate`。
+- Tailwind v4：使用 `@tailwindcss/postcss` 插件（本仓已配置 `postcss.config.mjs`）。
+- 组件一致性：如 `components.json` 与 `src/components/ui/*` 来源不一，使用官方 CLI 重新生成并覆盖。
+- 构建后确认：`docker logs cbt-web` 不应出现上述依赖缺失警告。
+
+### 安全与网络
+- RDS 仅开放给 ECS 内网安全组；`sslmode=disable` 仅在专有网络内部网连接时使用。
+- ECS 安全组：仅开放 22/80/443；应用端口映射到 `127.0.0.1`，避免直连。
+- 秘钥与 API Key 不入库；只放入服务器 `.env.production` 或云端密钥管理。
+
+### Project Status Board（Aliyun Deployment – concrete）
+- [ ] 确认证书文件名并上传至 `/etc/nginx/certs/<domain>/`
+- [ ] 后端：构建镜像、迁移、容器运行（3000 本地回环）
+- [ ] 前端：补齐 shadcn 依赖、构建镜像、容器运行（3001 本地回环）
+- [ ] Nginx：两域名 HTTPS + 反代到 3000/3001，reload
+- [ ] 验证：`/health` 200、前端 UI 正常显示
+- [ ] 风险复核：RDS 安全组与 ECS 端口、日志无错误
+
+
+---
+
+## Planner – 登录直登、隐藏 Playground、Dashboard/DDL 修复（本轮新增）
+
+Background and Motivation
+- 你希望：
+  1) 登录从"邮箱+验证码"改为"白名单邮箱可直接登录"。
+  2) Playground 功能暂不发布：后端与路由保留，但前端不再展示入口。
+  3) Dashboard/DDL 显示应完全由 Admin 配置的 homework package 决定；当班级未配置 package 时，不应出现任何"默认截止日（如周日）"的提示。
+
+Key Challenges and Analysis
+- 登录安全边界：直登需确保邮箱严格在 `whitelist_emails`，并与当前 upsert 用户、角色聚合逻辑保持一致，兼容现有 `/me` 增强返回。
+- Playground 开关：只隐藏导航条目即可满足"先不发布"的诉求；是否需要页面级软禁用由你决定（当前建议仅隐藏入口）。
+- DDL 口径统一：现有 `/dashboard/todos` 人工构造了两类到期：
+  - "本周需要开始新对话"使用 `getWeekEndDate()`（周末）作为 due，易被理解为系统性的 DDL；
+  - "作业提交"默认用 `finalizedAt + 7 天`，与 Admin 定义的 package 窗口期不一致；对于未配置 package 的班级仍会出现 DDL 感知。
+  - sessions/start 已经按 package 窗口做了强校验（若缺 package 会 403），因此 Dashboard 也应对齐到 package 存在与其时间窗。
+
+High-level Task Breakdown（仅规划，不执行）
+1) 登录直登（后端 + 前端）
+   - 后端新增端点：POST `/auth/direct-login` { email }
+     - 动作：
+       - 归一化邮箱 → 查询 `whitelist_emails`；若不存在 → 403。
+       - users 表 upsert（沿用 `/auth/verify-code` 逻辑：主角色、grants、classScopes 聚合）。
+       - 生成 JWT（与现有 payload 字段一致：`userId, role, roles, email, classScopes`）。
+       - 返回 `{ token, roles }`。
+     - 位置：`src/server/routes/auth.ts`（复用 verify 里的角色聚合与 classScopes 逻辑）。
+     - 文档更新：`docs/api.md` 与前端 `web/FRONTEND_API.md` 增加新端点与示例。
+   - 前端：
+     - `web/src/contexts/auth.tsx` 新增 `loginDirect(email)`（POST `/auth/direct-login`）并在成功后持久化 token → 触发 `/me`。
+     - `web/src/app/login/page.tsx` 简化为"输入邮箱 → 直接登录"的单阶段 UI；保留旧验证码流程的备用入口（可通过 env 开关切换）。
+     - 可选开关：`NEXT_PUBLIC_LOGIN_FLOW=direct|code`（默认 direct）。
+   - 成功标准：白名单邮箱可一键登录；非白名单返回 403；`/me` 数据与现状一致。
+
+2) Playground 前端隐藏（仅前端）
+   - 位置：`web/src/components/shared/sidebar.tsx`
+   - 调整：
+     - 对 `assistant_tech` 与 `admin` 的侧边项，移除 `{ name: "AI访客体验", href: "/dashboard/playground", ... }`。
+     - 或改为受 `process.env.NEXT_PUBLIC_FEATURE_PLAYGROUND === '1'` 控制，默认不展示。
+   - 不改动：后端 `/playground/*` 接口与前端路由文件保留（直达 URL 可访问，满足"未发布但保留功能"）。
+   - 成功标准：导航与首页不再出现 Playground 区块/入口。
+
+3) Dashboard/DDL 口径修复（后端）
+   - 位置：`src/server/routes/assignments.ts` → GET `/dashboard/todos`
+   - 变更点：
+     a. "本周需要开始新对话"卡片：
+        - 现状：只要本周没有会话且无进行中会话，就推一条 todo，`dueDate = getWeekEndDate(now)`。
+        - 目标：仅当"下一次会话的 sequenceNumber（= 已完成最大 + 1）在学生所在班级存在对应的 homework set"时才生成该 todo；
+          - 取 student.classId（由 `visitor_instances.userId` → `users.classId`）。
+          - 计算 nextSeq：若有进行中会话则不推；否则 `max(sessionNumber)+1`。
+          - 查询 `homework_sets` where `classId = student.classId and sequenceNumber = nextSeq`。
+          - 若无记录：不生成此 todo。
+          - 若有记录：`dueDate = set.studentDeadline`（不再使用周末默认值），`urgent = now > dueDate`。
+     b. "填写作业"卡片：
+        - 现状：对每个已完成会话，若没有提交，则以 `finalizedAt + 7 天` 生成作业 todo。
+        - 目标：
+          - 仅当存在匹配的 homework set（同上：按 classId + session.sessionNumber）时生成；
+          - `dueDate = set.studentDeadline`；窗口外（now > deadline）仍显示，但 `urgent` 依据 deadline；
+          - 若该 session 没有对应的 set：不生成作业 todo。
+   - 不改动：未读消息统计。
+   - 成功标准：
+     - 未配置任何 package 的班级：Dashboard 不再显示任何与 DDL 相关的"本周会话/作业"到期提示；
+     - 配置了 package 的班级：会话与作业的 todo 的 `dueDate` 与 Admin 设置严格一致；
+     - 与 `POST /sessions/start` 的窗口校验保持一致性（有 package 且在窗口期才引导开始）。
+
+Acceptance Criteria（验收清单）
+- 登录：
+  - 白名单邮箱 A 调用 `/auth/direct-login` → 200 且 `/me` 返回 roles/classScopes 与现有一致。
+  - 非白名单邮箱 B → 403。
+- Playground：登录为 `assistant_tech` 或 `admin` 时，侧边栏不显示"AI访客体验"。
+- Dashboard/DDL：
+  - 班级未配置任一 `homework_sets`：学生进入 Dashboard，仅能看到"未读消息"类提示（如有），不出现"本周会话截止/作业截止"。
+  - 班级配置了第 N 次作业包：
+    - 若本周无会话/未进行中：出现"完成本周AI访客对话"，其截止时间 = 该作业包的 `studentDeadline`；
+    - 若第 N 次会话已完成但未提交：出现"填写第N次作业"，其截止时间 = 该作业包的 `studentDeadline`。
+
+Change List（拟编辑文件）
+- 后端：
+  - `src/server/routes/auth.ts`：新增 `/auth/direct-login`，提取/复用 verify 里的角色与 scopes 聚合。
+  - `docs/api.md`：新增直登端点；更新示例。
+  - `src/server/routes/assignments.ts`：重构 `/dashboard/todos` 的生成逻辑，引入 `homework_sets` 查询与时间源统一。
+- 前端：
+  - `web/src/contexts/auth.tsx`：新增 `loginDirect(email)`；
+  - `web/src/app/login/page.tsx`：默认走直登；保留验证码模式开关；
+  - `web/src/components/shared/sidebar.tsx`：隐藏 Playground（或受 `NEXT_PUBLIC_FEATURE_PLAYGROUND` 控制）。
+  - `web/FRONTEND_API.md`：补充直登说明。
+
+Open Questions（请你拍板）
+1) 登录是否需要保留验证码模式作为后备（建议保留，默认关闭；需要时通过开关切换）。
+2) Playground 是否仅隐藏导航，还是连页面也做软禁用（访问 `/dashboard/playground` 时给 404/提示）？
+3) Dashboard 的"引导开始本周会话"是否应严格依赖 package 存在？（上述方案按"是"处理，以消除无 package 时的 DDL 误导）。
+
+Project Status Board（本轮任务）
+- [ ] 后端：实现 `/auth/direct-login` 与文档更新
+- [ ] 前端：`loginDirect` + 登录页直登化（保留验证码开关）
+- [ ] 前端：隐藏 Sidebar 的 Playground 入口（或加开关，默认 off）
+- [ ] 后端：重构 `/dashboard/todos` 以 package 为唯一 DDL 来源
+- [ ] 验收：未配置 package 的班级不再出现 DDL；配置后 dueDate 精确等于 Admin 设置
 
 

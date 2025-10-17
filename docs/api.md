@@ -9,6 +9,16 @@
 
 ---
 
+### 0) 认证与当前用户（更新）
+- POST `/auth/direct-login` → 白名单直登
+  - 请求体：`{ "email": "string" }`
+  - 行为：邮箱命中 `whitelist_emails` 即 upsert 用户并签发 JWT（含 `role/roles/classScopes`），未命中返回 403。
+  - 响应体：`{ "token": "...", "roles": ["student"|"assistant_tech"|"assistant_class"|"admin", ...] }`
+- 兼容：原验证码登录 `/auth/request-code` 与 `/auth/verify-code` 保留。
+- GET `/me` → 当前用户信息（返回 `roles/classScopes/visitorInstanceIds/currentVisitor` 等增强信息）。
+
+---
+
 ### 1) 开始会话（Start Session）
 POST `/sessions/start`
 
@@ -196,13 +206,18 @@ GET `/sessions/{sessionId}`
 
 ---
 
-### 2.8）Dashboard 待办
+### 2.8）Dashboard 待办（更新）
 GET `/dashboard/todos?visitorInstanceId=...`
 
 响应体
 ```json
 { "items": [ ... ], "summary": { "totalTodos": 3, "urgentTodos": 1, "completedThisWeek": 0, "weeklyProgress": { ... } } }
 ```
+
+说明（变更）：
+- “完成本周AI访客对话”仅在“学生所在班级存在下一次会话对应的作业包（homework_sets，classId + next sequenceNumber）”时才出现；其 `dueDate = homework_sets.studentDeadline`。
+- “填写第 N 次作业”仅当存在该次会话对应的作业包时出现；其 `dueDate = homework_sets.studentDeadline`；若班级未配置该次作业包则不产生该待办。
+- 未读消息统计保持不变。
 
 ---
 

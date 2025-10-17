@@ -230,6 +230,9 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: 'forbidden' });
     }
 
+    // 学生所在班级（用于匹配作业包）
+    const [stuRow] = await db.select({ classId: users.classId }).from(users).where(eq(users.id as any, (inst as any).userId));
+
     // 获取所有会话
     const sessRows = await db
       .select()
@@ -247,7 +250,7 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
     const completedSessions = (sessRows as any[]).filter(s => s.finalizedAt);
     sessionsCompleted = completedSessions.length;
 
-    // 本周是否需要开始新对话
+    // 本周是否需要开始新对话（仅当存在下一次作业包时才引导）
     const now = new Date();
     const thisWeek = getWeekKey(now);
     const hasThisWeekSession = (sessRows as any[]).some(s => {
@@ -256,30 +259,57 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
     });
 
     if (!hasThisWeekSession && !currentSession) {
-      todos.push({
-        id: 'session-weekly',
-        type: 'session',
-        title: '完成本周AI访客对话',
-        description: '还未开始本周的CBT对话训练',
-        completed: false,
-        urgent: true,
-        dueDate: getWeekEndDate(now).toISOString(),
-        action: {
-          type: 'navigate',
-          target: '/dashboard/conversation'
+      // 下一次会话序号
+      const maxNumber = (sessRows as any[]).reduce((m, r) => Math.max(m, Number((r as any).sessionNumber || 0)), 0);
+      const nextSeq = maxNumber + 1;
+      let dueFromPackage: Date | null = null;
+      if ((stuRow as any)?.classId != null) {
+        const [pkg] = await db.select({ studentDeadline: homeworkSets.studentDeadline }).from(homeworkSets)
+          .where(and(
+            eq(homeworkSets.classId as any, (stuRow as any).classId),
+            eq(homeworkSets.sequenceNumber as any, nextSeq)
+          ))
+          .orderBy(desc(homeworkSets.updatedAt as any));
+        if (pkg) {
+          dueFromPackage = (pkg as any).studentDeadline as Date;
         }
-      });
+      }
+      if (dueFromPackage) {
+        todos.push({
+          id: 'session-weekly',
+          type: 'session',
+          title: '完成本周AI访客对话',
+          description: '还未开始本周的CBT对话训练',
+          completed: false,
+          urgent: (dueFromPackage as Date) < now,
+          dueDate: (dueFromPackage as Date).toISOString(),
+          action: {
+            type: 'navigate',
+            target: '/dashboard/conversation'
+          }
+        });
+      }
     }
 
-    // 检查每个已完成会话的作业提交情况
+    // 检查每个已完成会话的作业提交情况（仅当存在对应作业包时）
     for (const session of completedSessions) {
       const sessionId = session.id;
       const tr = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, sessionId));
 
-      if (tr.length === 0) {
-        const dueDate = new Date(session.finalizedAt);
-        dueDate.setDate(dueDate.getDate() + 7); // 会话结束后7天内填写
+      // 查找班级该次序的作业包
+      let setDeadline: Date | null = null;
+      if ((stuRow as any)?.classId != null) {
+        const [setRow] = await db.select({ studentDeadline: homeworkSets.studentDeadline }).from(homeworkSets)
+          .where(and(
+            eq(homeworkSets.classId as any, (stuRow as any).classId),
+            eq(homeworkSets.sequenceNumber as any, (session as any).sessionNumber)
+          ))
+          .orderBy(desc(homeworkSets.updatedAt as any));
+        if (setRow) setDeadline = (setRow as any).studentDeadline as Date;
+      }
 
+      if (tr.length === 0 && setDeadline) {
+        const dueDate = new Date(setDeadline);
         todos.push({
           id: `assignment-${sessionId}`,
           type: 'assignment',
@@ -295,7 +325,7 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
             params: { sessionId }
           }
         });
-      } else {
+      } else if (tr.length > 0) {
         thoughtRecordsCompleted++;
       }
     }

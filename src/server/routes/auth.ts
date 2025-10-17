@@ -114,6 +114,55 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     return reply.send({ token, roles: Array.from(roles) });
   });
 
+  // 白名单直登（无需验证码）
+  app.post('/auth/direct-login', {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['email'],
+        properties: { email: { type: 'string' } },
+      },
+    },
+  }, async (req, reply) => {
+    const db = createDb();
+    const { email } = req.body as any;
+    const normEmail = (email || '').toString().trim().toLowerCase();
+
+    // 白名单校验
+    const [white] = await db.select().from(whitelistEmails).where(eq(whitelistEmails.email as any, normEmail));
+    if (!white) return reply.status(403).send({ error: 'email not in whitelist' });
+
+    // upsert 用户（与 verify-code 同步逻辑）
+    const [existing] = await db.select().from(users).where(eq(users.email as any, normEmail));
+    let userId = existing?.id;
+    if (!existing) {
+      userId = crypto.randomUUID();
+      await db.insert(users).values({ id: userId, email: normEmail, name: (white as any).name || null, role: (white as any).role, classId: (white as any).classId || null, userId: (white as any).userId || null, status: (white as any).status || 'active', createdAt: new Date(), updatedAt: new Date() } as any);
+    }
+
+    // 角色聚合
+    const roles = new Set<string>();
+    if ((white as any).role) roles.add((white as any).role);
+    const grants = await db.select().from(userRoleGrants).where(eq(userRoleGrants.userId as any, userId!));
+    for (const g of grants as any[]) roles.add((g as any).role);
+    const [userRowForRoles] = await db.select({ role: users.role }).from(users).where(eq(users.id as any, userId!));
+    if ((userRowForRoles as any)?.role) roles.add((userRowForRoles as any).role);
+
+    // 班级作用域（assistant_class）
+    const classScopes: Array<{ role: string; classId?: number }> = [];
+    for (const g of grants as any[]) {
+      if ((g as any).role === 'assistant_class') {
+        classScopes.push({ role: 'assistant_class', classId: (g as any).classId || (white as any).classId || undefined });
+      }
+    }
+    if ((white as any).role === 'assistant_class') {
+      classScopes.push({ role: 'assistant_class', classId: (white as any).classId || undefined });
+    }
+
+    const token = await signJwt({ userId: userId!, role: (white as any).role, roles: Array.from(roles), email: normEmail, classScopes });
+    return reply.send({ token, roles: Array.from(roles) });
+  });
+
   // 当前用户（增强版）
   app.get('/me', async (req, reply) => {
     if (!req.auth) return reply.status(401).send({ error: 'unauthorized' });
