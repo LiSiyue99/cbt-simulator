@@ -163,6 +163,43 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     return reply.send({ token, roles: Array.from(roles) });
   });
 
+  // 兼容性：GET 版本直登（避免部分环境 JSON 解析失败导致的 400）
+  app.get('/auth/direct-login', async (req, reply) => {
+    const db = createDb();
+    const normEmail = ((req.query as any)?.email || '').toString().trim().toLowerCase();
+    if (!normEmail) return reply.status(400).send({ error: 'missing email' });
+
+    const [white] = await db.select().from(whitelistEmails).where(eq(whitelistEmails.email as any, normEmail));
+    if (!white) return reply.status(403).send({ error: 'email not in whitelist' });
+
+    const [existing] = await db.select().from(users).where(eq(users.email as any, normEmail));
+    let userId = existing?.id;
+    if (!existing) {
+      userId = crypto.randomUUID();
+      await db.insert(users).values({ id: userId, email: normEmail, name: (white as any).name || null, role: (white as any).role, classId: (white as any).classId || null, userId: (white as any).userId || null, status: (white as any).status || 'active', createdAt: new Date(), updatedAt: new Date() } as any);
+    }
+
+    const roles = new Set<string>();
+    if ((white as any).role) roles.add((white as any).role);
+    const grants = await db.select().from(userRoleGrants).where(eq(userRoleGrants.userId as any, userId!));
+    for (const g of grants as any[]) roles.add((g as any).role);
+    const [userRowForRoles] = await db.select({ role: users.role }).from(users).where(eq(users.id as any, userId!));
+    if ((userRowForRoles as any)?.role) roles.add((userRowForRoles as any).role);
+
+    const classScopes: Array<{ role: string; classId?: number }> = [];
+    for (const g of grants as any[]) {
+      if ((g as any).role === 'assistant_class') {
+        classScopes.push({ role: 'assistant_class', classId: (g as any).classId || (white as any).classId || undefined });
+      }
+    }
+    if ((white as any).role === 'assistant_class') {
+      classScopes.push({ role: 'assistant_class', classId: (white as any).classId || undefined });
+    }
+
+    const token = await signJwt({ userId: userId!, role: (white as any).role, roles: Array.from(roles), email: normEmail, classScopes });
+    return reply.send({ token, roles: Array.from(roles) });
+  });
+
   // 当前用户（增强版）
   app.get('/me', async (req, reply) => {
     if (!req.auth) return reply.status(401).send({ error: 'unauthorized' });

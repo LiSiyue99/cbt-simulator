@@ -8,8 +8,9 @@ tgz="${1:-}"
 [ -f "$tgz" ] || { echo "用法: $0 /opt/cbt/uploads/cbt-api-*.tgz"; exit 2; }
 
 NVM="$HOME/.nvm/nvm.sh"
-APP_LINK="/opt/cbt/api"
+APP_ROOT="/opt/cbt/api"
 RELEASE_ROOT="/opt/cbt/releases/api"
+CURRENT_LINK="$APP_ROOT/current"
 PM2_NAME="cbt-api"
 HEALTH_URL="http://127.0.0.1:3000/health"
 
@@ -19,8 +20,8 @@ mkdir -p "$RELEASE_DIR"
 
 tar -xzf "$tgz" -C "$RELEASE_DIR"
 
-if [ -f "$APP_LINK/.env.production" ]; then
-  cp -f "$APP_LINK/.env.production" "$RELEASE_DIR/.env.production"
+if [ -f "$CURRENT_LINK/.env.production" ]; then
+  cp -f "$CURRENT_LINK/.env.production" "$RELEASE_DIR/.env.production"
 fi
 
 if [ -s "$NVM" ]; then . "$NVM"; nvm use 20 >/dev/null; fi
@@ -38,8 +39,15 @@ exec ./node_modules/.bin/tsx src/server/index.ts
 EOS
 chmod +x "$RELEASE_DIR/run-api.sh"
 
-ln -sfn "$RELEASE_DIR" "$APP_LINK"
-pm2 describe "$PM2_NAME" >/dev/null 2>&1 && pm2 restart "$PM2_NAME" --update-env || pm2 start "$APP_LINK/run-api.sh" --name "$PM2_NAME"
+# 确保 releases/current 结构并将 current 指向最新
+mkdir -p "$APP_ROOT" "$RELEASE_ROOT"
+if [ -e "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ]; then
+  echo "发现 $CURRENT_LINK 为实体目录，备份后改为软链结构"
+  mv "$CURRENT_LINK" "${CURRENT_LINK}.bak-${ts}"
+fi
+ln -sfn "$RELEASE_DIR" "$CURRENT_LINK"
+
+pm2 describe "$PM2_NAME" >/dev/null 2>&1 && pm2 restart "$PM2_NAME" --update-env || pm2 start "$CURRENT_LINK/run-api.sh" --name "$PM2_NAME"
 pm2 save >/dev/null || true
 
 sleep 2

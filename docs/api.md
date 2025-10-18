@@ -342,9 +342,13 @@ sequenceDiagram
   - 列表：GET `/admin/templates` → `{ items: { templateKey, name, brief, corePersona, updatedAt }[] }`
   - 更新：PUT `/admin/templates/{templateKey}` → `{ ok, item }`
 - 规则与日历：
-  - 时间窗：GET/POST `/admin/policy/time-window`
+  - 时间窗：GET/POST `/admin/policy/time-window`（页面已弱化，不再展示）
   - 周级 DDL 解锁：POST `/admin/policy/ddl-override`、GET `/admin/policy/ddl-override`、POST `/admin/policy/ddl-override/batch`、GET `/admin/policy/ddl-override/recent`
   - 会话级 DDL：GET/POST `/admin/policy/session-override`、GET `/admin/policy/session-override/recent`
+  - Homework 批量解锁（新增）：
+    - POST `/admin/homework/sets/{id}/ddl-override/students` → `{ action, until, reason? }`（对该包班级所有学生批量放宽；weekKey 取该包 studentDeadline 所在周）
+    - POST `/admin/homework/sets/{id}/ddl-override/assistants` → `{ action, until, reason? }`（对负责该班学生的技术助教批量放宽；weekKey 取该包 assistantDeadline 所在周）
+
 ### 管理员：周级 DDL 解锁（批量）
 POST `/admin/policy/ddl-override/batch`
 

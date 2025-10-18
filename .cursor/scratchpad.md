@@ -303,6 +303,75 @@ Lessons
 - SSH 隧道：`ssh -N -L 5433:<RDS内网域名>:5432 <ecs_user>@<ECS公网IP>`，本地把 `DATABASE_URL` 指向 `localhost:5433`。
 
 
+---
+
+## Executor – 前端生产部署“修复与验证”Playbook（可复制执行）
+
+背景：线上出现“直登未生效/历史构建残留/Turbopack Panic/目录混杂”等问题。以下步骤一次性将前端部署切换为不可变发布（releases + current 软链）、禁用 Turbopack、清理缓存并加强验证。
+
+前提：本地用 `scripts/deploy-web-local.sh` 生成 tgz（已排除 `.env.local/.next`）。服务器已放置 `/root/bin/deploy-cbt-web.sh`（脚本已加固）。
+
+1) 备份旧目录并初始化结构
+```bash
+mv /opt/cbt/web /opt/cbt/web.bak-$(date +%s) 2>/dev/null || true
+mkdir -p /opt/cbt/web/releases /opt/cbt/uploads /root/bin
+```
+
+2) 上传最新包并部署
+```bash
+# 假设本地脚本已经上传：/opt/cbt/uploads/cbt-web-*.tgz
+bash /root/bin/deploy-cbt-web.sh /opt/cbt/uploads/$(ls -1t /opt/cbt/uploads/cbt-web-*.tgz | head -n1)
+```
+
+3) 强制直登环境（如 current 尚无生产 env，写入一份最小 env）
+```bash
+ts=$(date +%Y%m%d-%H%M%S)
+current=/opt/cbt/web/current
+if [ ! -f "$current/.env.production" ] && [ ! -f "$current/.env.production.local" ]; then
+  cat > "$current/.env.production.local" << 'EOF'
+NEXT_PUBLIC_API_BASE_URL=https://api.aiforcbt.online
+NEXT_PUBLIC_LOGIN_FLOW=direct
+EOF
+fi
+```
+
+4) 健康与页面验证
+```bash
+curl -I https://aiforcbt.online/api/health   # 200
+curl -s https://aiforcbt.online/login | grep -E "直接登录|获取验证码" -n
+# 期望出现“直接登录”；若仍显示“获取验证码”，进一步排查：
+grep -R "NEXT_PUBLIC_LOGIN_FLOW" /opt/cbt/web/current/.next -n || true
+grep -R "直接登录" /opt/cbt/web/current/.next -n || true
+```
+
+5) 若需手工构建回放（异常时使用）
+```bash
+. ~/.nvm/nvm.sh && nvm use 20 >/dev/null
+cd /opt/cbt/web/current
+rm -rf .next
+npm ci
+./node_modules/.bin/next build
+pm2 restart cbt-web --update-env || pm2 start ./node_modules/.bin/next --name cbt-web -- start -p 3001 --cwd /opt/cbt/web/current
+pm2 save
+```
+
+6) Nginx 缓存与 HTML 不缓存（建议）
+```nginx
+# HTML 不缓存
+location ~* \.html$ { add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0"; }
+# _next 静态资源长缓存（指纹）
+location ^~ /_next/static/ { add_header Cache-Control "public, max-age=31536000, immutable"; }
+```
+reload：
+```bash
+nginx -t && systemctl reload nginx
+```
+
+验收标准：
+- `/api/health` 返回 200 且包含 buildId（如已配置）
+- `/login` 页面显示“直接登录”；浏览器硬刷新或无痕模式验证仍为直登
+- `pm2 list` 中 `cbt-web` 运行且 `--cwd` 指向 `/opt/cbt/web/current`
+
 ## Executor's Feedback or Assistance Requests
 1) 备选提供商：是否可以接入任一或多项？（勾选）
    - [ ] OpenAI（`OPENAI_API_KEY`）

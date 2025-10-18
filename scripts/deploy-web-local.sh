@@ -19,6 +19,7 @@ echo "[local] 打包前端代码 → ${tmp}"
 tar -C "$SRC" -czf "$tmp" \
   --exclude ".git" \
   --exclude "node_modules" \
+  --exclude ".env.local" \
   --exclude ".next" \
   .
 

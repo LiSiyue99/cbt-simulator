@@ -569,8 +569,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const payload = (app as any).requireRole(req, ['admin']);
     const db = createDb();
     const { id } = req.params as any;
-    const [row] = await db.select().from(homeworkSets).where((homeworkSets.id as any).eq ? (homeworkSets.id as any).eq(id) : (homeworkSets.id as any));
-    if (!row || (row as any).id !== id) return reply.status(404).send({ error: 'not_found' });
+    const [row] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
+    if (!row) return reply.status(404).send({ error: 'not_found' });
     return reply.send({ item: row });
   });
 
@@ -587,9 +587,9 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     if (Object.keys(allowed).length === 0) return reply.status(400).send({ error: 'no_changes' });
     allowed.updatedAt = new Date();
     try {
-      await db.update(homeworkSets).set(allowed as any).where((homeworkSets.id as any).eq ? (homeworkSets.id as any).eq(id) : (homeworkSets.id as any));
+      await db.update(homeworkSets).set(allowed as any).where(eq(homeworkSets.id as any, id));
       await writeAudit(db, (payload as any).userId, 'update_homework_set', 'homework_set', id, JSON.stringify(Object.keys(allowed)));
-      const [row] = await db.select().from(homeworkSets).where((homeworkSets.id as any).eq ? (homeworkSets.id as any).eq(id) : (homeworkSets.id as any));
+      const [row] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
       return reply.send({ ok: true, item: row });
     } catch (e:any) {
       return reply.status(500).send({ error: 'update_failed', message: e?.message });
@@ -602,11 +602,92 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const db = createDb();
     const { id } = req.params as any;
     try {
-      await (db as any).delete(homeworkSets).where((homeworkSets.id as any).eq ? (homeworkSets.id as any).eq(id) : (homeworkSets.id as any));
+      await (db as any).delete(homeworkSets).where(eq(homeworkSets.id as any, id));
       await writeAudit(db, (payload as any).userId, 'delete_homework_set', 'homework_set', id, 'delete');
       return reply.send({ ok: true });
     } catch (e:any) {
       return reply.status(500).send({ error: 'delete_failed', message: e?.message });
     }
+  });
+
+  // Override summary for a homework set (current package week only)
+  app.get('/admin/homework/sets/:id/override-summary', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['admin']);
+    const db = createDb();
+    const { id } = req.params as any;
+    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
+    if (!setRow) return reply.status(404).send({ error: 'homework_set_not_found' });
+
+    const classId = (setRow as any).classId as number;
+    const wkStudent = formatWeekKey(new Date((setRow as any).studentDeadline));
+    const wkAssistant = formatWeekKey(new Date((setRow as any).assistantDeadline));
+
+    // 学生：batchScope = set:{id}:class:{classId}
+    const stuRows = await db.select().from(deadlineOverrides)
+      .where(and(eq(deadlineOverrides.batchScope as any, `set:${id}:class:${classId}` as any), eq(deadlineOverrides.weekKey as any, wkStudent as any), eq(deadlineOverrides.action as any, 'extend_student_tr' as any)))
+      .orderBy(desc(deadlineOverrides.createdAt as any)).limit(1);
+    // 助教：batchScope = set:{id}:class:{classId}:assistants
+    const asstRows = await db.select().from(deadlineOverrides)
+      .where(and(eq(deadlineOverrides.batchScope as any, `set:${id}:class:${classId}:assistants` as any), eq(deadlineOverrides.weekKey as any, wkAssistant as any), eq(deadlineOverrides.action as any, 'extend_assistant_feedback' as any)))
+      .orderBy(desc(deadlineOverrides.createdAt as any)).limit(1);
+
+    const out: any = {};
+    if ((stuRows as any[]).length) out.studentUntil = (stuRows[0] as any).until;
+    if ((asstRows as any[]).length) out.assistantUntil = (asstRows[0] as any).until;
+    return reply.send(out);
+  });
+
+  // Homework set scoped: bulk DDL override for all students of the class
+  app.post('/admin/homework/sets/:id/ddl-override/students', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['admin']);
+    const db = createDb();
+    const { id } = req.params as any;
+    const { action, until, reason } = (req.body || {}) as any;
+    if (!action || !until) return reply.status(400).send({ error: 'missing fields' });
+
+    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
+    if (!setRow) return reply.status(404).send({ error: 'homework_set_not_found' });
+
+    const stuRows = await db.select({ id: users.id }).from(users).where(and(eq(users.role as any, 'student' as any), eq(users.classId as any, (setRow as any).classId)));
+    if (!(stuRows as any[]).length) return reply.send({ ok: true, affected: 0 });
+
+    const wk = formatWeekKey(new Date((setRow as any).studentDeadline));
+    const batchId = crypto.randomUUID();
+    const values = (stuRows as any[]).map((s:any)=>({
+      subjectType: 'student', subjectId: s.id, weekKey: wk, action, until: new Date(until), reason,
+      batchId, batchScope: `set:${id}:class:${(setRow as any).classId}`, createdAt: new Date(), createdBy: (payload as any).userId,
+    }));
+    await db.insert(deadlineOverrides).values(values as any);
+    await writeAudit(db, (payload as any).userId, 'ddl_override_batch_students', 'homework_set', id, `${action} week ${wk} count ${values.length}`);
+    return reply.send({ ok: true, affected: values.length, batchId, weekKey: wk });
+  });
+
+  // Homework set scoped: bulk DDL override for assistant_tech responsible for the class
+  app.post('/admin/homework/sets/:id/ddl-override/assistants', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['admin']);
+    const db = createDb();
+    const { id } = req.params as any;
+    const { action, until, reason } = (req.body || {}) as any;
+    if (!action || !until) return reply.status(400).send({ error: 'missing fields' });
+
+    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
+    if (!setRow) return reply.status(404).send({ error: 'homework_set_not_found' });
+
+    const studentsInClass = await db.select({ id: users.id }).from(users).where(and(eq(users.role as any, 'student' as any), eq(users.classId as any, (setRow as any).classId)));
+    const stuIds = (studentsInClass as any[]).map((s:any)=> s.id);
+    if (!stuIds.length) return reply.send({ ok: true, affected: 0 });
+    const binds = await db.select({ assistantId: assistantStudents.assistantId }).from(assistantStudents).where(inArray(assistantStudents.studentId as any, stuIds as any));
+    const uniqueAssistantIds = Array.from(new Set((binds as any[]).map((b:any)=> b.assistantId)));
+    if (!uniqueAssistantIds.length) return reply.send({ ok: true, affected: 0 });
+
+    const wk = formatWeekKey(new Date((setRow as any).assistantDeadline));
+    const batchId = crypto.randomUUID();
+    const values = uniqueAssistantIds.map((aid:string)=>({
+      subjectType: 'assistant', subjectId: aid, weekKey: wk, action, until: new Date(until), reason,
+      batchId, batchScope: `set:${id}:class:${(setRow as any).classId}:assistants`, createdAt: new Date(), createdBy: (payload as any).userId,
+    }));
+    await db.insert(deadlineOverrides).values(values as any);
+    await writeAudit(db, (payload as any).userId, 'ddl_override_batch_assistants', 'homework_set', id, `${action} week ${wk} count ${values.length}`);
+    return reply.send({ ok: true, affected: values.length, batchId, weekKey: wk });
   });
 }
