@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../../db/client';
-import { systemConfigs, deadlineOverrides, users, sessions, sessionDeadlineOverrides, visitorInstances, visitorTemplates, auditLogs, assistantStudents, homeworkSets } from '../../db/schema';
+import { systemConfigs, deadlineOverrides, users, sessions, sessionDeadlineOverrides, visitorInstances, visitorTemplates, auditLogs, assistantStudents, homeworkSets, whitelistEmails } from '../../db/schema';
 import { formatWeekKey } from '../../policy/timeWindow';
 import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import { createId } from '@paralleldrive/cuid2';
@@ -8,6 +8,28 @@ import { createId } from '@paralleldrive/cuid2';
 export async function registerAdminRoutes(app: FastifyInstance) {
   async function writeAudit(db: any, actorId: string, action: string, targetType: string, targetId: string, summary?: string) {
     try { await db.insert(auditLogs).values({ actorId, action, targetType, targetId, summary, createdAt: new Date() } as any); } catch {}
+  }
+  // 将 users 行同步到 whitelist_emails（若不存在则创建，存在则更新）
+  async function upsertWhitelistByUser(db: any, u: { email: string; name?: string; role: string; userId?: number; classId?: number; status?: string }) {
+    if (!u?.email) return;
+    const [exists] = await db.select().from(whitelistEmails).where(eq(whitelistEmails.email as any, u.email as any));
+    const row: any = {
+      email: u.email,
+      name: u.name || null,
+      role: u.role,
+      userId: u.userId as any,
+      classId: u.classId as any,
+      status: (u.status || 'active') as any,
+      updatedAt: new Date(),
+    };
+    try {
+      if (exists) {
+        await db.update(whitelistEmails).set(row).where(eq(whitelistEmails.email as any, u.email as any));
+      } else {
+        row.createdAt = new Date();
+        await db.insert(whitelistEmails).values(row);
+      }
+    } catch {}
   }
   // 系统时间窗：读取
   app.get('/admin/policy/time-window', async (req, reply) => {
@@ -215,6 +237,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     if (!email || !role) return reply.status(400).send({ error: 'missing fields' });
     const id = createId();
     await db.insert(users).values({ id, name, email, role, userId, classId, status: status || 'active', createdAt: new Date(), updatedAt: new Date() } as any);
+    await upsertWhitelistByUser(db, { email, name, role, userId, classId, status: status || 'active' });
     await writeAudit(db, (payload as any).userId, 'create_user', 'user', id, `${email} ${role}`);
     return reply.send({ ok: true, id });
   });
@@ -224,11 +247,35 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const db = createDb();
     const { id } = req.params as any;
     const body = (req.body || {}) as any;
+    const [oldRow] = await db.select().from(users).where(eq(users.id as any, id));
     const allowed: any = {};
     ['name','email','role','userId','classId','status'].forEach(k => { if (body[k] !== undefined) allowed[k] = body[k]; });
     if (Object.keys(allowed).length === 0) return reply.status(400).send({ error: 'no changes' });
     allowed.updatedAt = new Date();
-    await db.update(users).set(allowed).where((users.id as any).eq ? (users.id as any).eq(id) : (users.id as any));
+    await db.update(users).set(allowed).where(eq(users.id as any, id));
+    // 同步白名单（新邮箱 upsert；若邮箱变更，将旧邮箱置为 inactive）
+    const newUser = { email: allowed.email ?? (oldRow as any)?.email, name: allowed.name ?? (oldRow as any)?.name, role: allowed.role ?? (oldRow as any)?.role, userId: allowed.userId ?? (oldRow as any)?.userId, classId: allowed.classId ?? (oldRow as any)?.classId, status: allowed.status ?? (oldRow as any)?.status } as any;
+    await upsertWhitelistByUser(db, newUser);
+    if (allowed.email && (oldRow as any)?.email && allowed.email !== (oldRow as any).email) {
+      try { await db.update(whitelistEmails).set({ status: 'inactive', updatedAt: new Date() } as any).where(eq(whitelistEmails.email as any, (oldRow as any).email as any)); } catch {}
+    }
+    // 若被设置为停用，联动清理负责关系
+    const newStatus = allowed.status ?? (oldRow as any)?.status;
+    const roleNow = allowed.role ?? (oldRow as any)?.role;
+    if (newStatus === 'inactive') {
+      try {
+        if (roleNow === 'student') {
+          await (db as any).delete(assistantStudents).where(eq(assistantStudents.studentId as any, id));
+        } else if (roleNow === 'assistant_tech' || roleNow === 'assistant_class') {
+          await (db as any).delete(assistantStudents).where(eq(assistantStudents.assistantId as any, id));
+        }
+        // 白名单也置为停用以阻止直登
+        const emailNow = newUser.email;
+        if (emailNow) {
+          await db.update(whitelistEmails).set({ status: 'inactive', updatedAt: new Date() } as any).where(eq(whitelistEmails.email as any, emailNow as any));
+        }
+      } catch {}
+    }
     await writeAudit(db, (payload as any).userId, 'update_user', 'user', id, JSON.stringify(allowed));
     return reply.send({ ok: true });
   });
@@ -237,7 +284,19 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const payload = (app as any).requireRole(req, ['admin']);
     const db = createDb();
     const { id } = req.params as any;
-    await db.update(users).set({ status: 'inactive', updatedAt: new Date() } as any).where((users.id as any).eq ? (users.id as any).eq(id) : (users.id as any));
+    const [row] = await db.select().from(users).where(eq(users.id as any, id));
+    await db.update(users).set({ status: 'inactive', updatedAt: new Date() } as any).where(eq(users.id as any, id));
+    if (row && (row as any).email) {
+      try { await db.update(whitelistEmails).set({ status: 'inactive', updatedAt: new Date() } as any).where(eq(whitelistEmails.email as any, (row as any).email as any)); } catch {}
+    }
+    // 同步清理负责关系
+    try {
+      if ((row as any)?.role === 'student') {
+        await (db as any).delete(assistantStudents).where(eq(assistantStudents.studentId as any, id));
+      } else if ((row as any)?.role === 'assistant_tech' || (row as any)?.role === 'assistant_class') {
+        await (db as any).delete(assistantStudents).where(eq(assistantStudents.assistantId as any, id));
+      }
+    } catch {}
     await writeAudit(db, (payload as any).userId, 'delete_user', 'user', id, 'soft delete');
     return reply.send({ ok: true });
   });
@@ -336,8 +395,42 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const { studentId, templateKey } = (req.body || {}) as any;
     if (!studentId || !templateKey) return reply.status(400).send({ error: 'missing fields' });
     try {
-      const instanceId = await ensureInstance(db, studentId, templateKey);
-      await writeAudit(db, (payload as any).userId, 'assign_template', 'user', studentId, `template ${templateKey} instance ${instanceId}`);
+      // 规则：一个学生只保留一个 visitor 实例
+      const existingAll = await db
+        .select({ id: visitorInstances.id, templateId: visitorInstances.templateId })
+        .from(visitorInstances)
+        .where(eq(visitorInstances.userId as any, studentId));
+      let instanceId: string | null = null;
+      if ((existingAll as any[]).length > 0) {
+        // 若已有相同模板的实例，直接复用；否则删除全部旧实例后创建新实例
+        const tpls = await db.select({ id: visitorTemplates.id, templateKey: visitorTemplates.templateKey }).from(visitorTemplates);
+        const idToKey = new Map<string,string>((tpls as any[]).map((t:any)=>[t.id, t.templateKey]));
+        const same = (existingAll as any[]).find((row:any)=> String(idToKey.get(row.templateId)) === String(templateKey));
+        if (same) {
+          instanceId = (same as any).id;
+        } else {
+          // 删除旧实例（级联清理会话与负责关系）
+          await (db as any).delete(visitorInstances).where(eq(visitorInstances.userId as any, studentId));
+          instanceId = await ensureInstance(db, studentId, templateKey);
+        }
+      } else {
+        instanceId = await ensureInstance(db, studentId, templateKey);
+      }
+      // 自动绑定助教：根据 whitelist_emails 中 incharge_visitor 包含该模板键的助教邮箱，映射到 users.id
+      const wl = await db.select().from(whitelistEmails);
+      const assistantEmails = (wl as any[])
+        .filter((w:any)=> (w.role==='assistant_tech') && Array.isArray(w.inchargeVisitor) && (w.inchargeVisitor as any[]).map(String).includes(String(templateKey)))
+        .map((w:any)=> w.email);
+      if (assistantEmails.length) {
+        const asUsers = await db.select({ id: users.id, email: users.email }).from(users).where(inArray(users.email as any, assistantEmails as any));
+        for (const a of asUsers as any[]) {
+          const exists = await db.select().from(assistantStudents).where(and(eq(assistantStudents.assistantId as any, (a as any).id), eq(assistantStudents.studentId as any, studentId), eq(assistantStudents.visitorInstanceId as any, instanceId!)));
+          if (!(exists as any[]).length) {
+            await db.insert(assistantStudents).values({ id: createId(), assistantId: (a as any).id, studentId, visitorInstanceId: instanceId!, createdAt: new Date() } as any);
+          }
+        }
+      }
+      await writeAudit(db, (payload as any).userId, 'assign_template', 'user', studentId, `template ${templateKey} instance ${instanceId} autoBindAssistants=${assistantEmails?.length||0}`);
       return reply.send({ ok: true, visitorInstanceId: instanceId });
     } catch (e:any) {
       return reply.status(400).send({ error: e.message || 'assign_template_failed' });
