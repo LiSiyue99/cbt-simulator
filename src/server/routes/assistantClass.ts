@@ -289,6 +289,7 @@ export async function registerAssistantClassRoutes(app: FastifyInstance) {
           hasSubmission: 0,
           sessionDurationMinutes: null,
           assistantFeedback: null,
+          studentMessageCount: 0,
         });
         continue;
       }
@@ -328,6 +329,19 @@ export async function registerAssistantClassRoutes(app: FastifyInstance) {
         assistantFeedback = (msgsDesc[0] as any).content as string;
       }
 
+      // 学生消息轮次：统计该会话 chat_history 中 speaker === 'user' 的条数
+      let studentMessageCount = 0;
+      try {
+        const [full] = await db
+          .select({ chat: sessions.chatHistory })
+          .from(sessions)
+          .where(eq(sessions.id as any, (target as any).id));
+        const hist = ((full as any)?.chat || []) as any[];
+        if (Array.isArray(hist)) {
+          studentMessageCount = hist.filter((t: any) => String((t as any).speaker).toLowerCase() === 'user').length;
+        }
+      } catch {}
+
       items.push({
         studentId: (stu as any).id,
         name: (stu as any).name,
@@ -336,6 +350,7 @@ export async function registerAssistantClassRoutes(app: FastifyInstance) {
         hasSubmission,
         sessionDurationMinutes,
         assistantFeedback,
+        studentMessageCount,
       });
     }
     return reply.send({ items });
