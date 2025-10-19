@@ -4,7 +4,7 @@ import { finalizeSessionById, prepareNewSession } from '../../services/sessionPi
 import { createDb } from '../../db/client';
 import { sessions, visitorInstances, visitorTemplates, longTermMemoryVersions, assistantStudents, homeworkSubmissions, users, homeworkSets } from '../../db/schema';
 import { eq, desc, sql, and } from 'drizzle-orm';
-import { getBeijingNow, formatWeekKey, getStudentDeadline, getWeeklyOverrideUntil, getStudentOpenTime, getConfiguredStudentOpenTime } from '../../policy/timeWindow';
+// 周维度时间窗已废弃，现改为基于 homework_sets 的绝对窗口；不再引入 policy/timeWindow
 import { chatWithVisitor, type FullPersona, type ChatTurn } from '../../chat/sessionOrchestrator';
 
 export async function registerSessionRoutes(app: FastifyInstance) {
@@ -22,45 +22,18 @@ export async function registerSessionRoutes(app: FastifyInstance) {
     },
   }, async (req, reply) => {
     const { visitorInstanceId, sessionNumber, auto } = req.body as any;
-    // 限时：学生在周五24:00后不可开启当周新会话
+    // 已移除“按周开放/截止”的限制；仅学生保留未完成阻断与一小时冷却
     const payload = (req as any).auth;
     if (payload && payload.role === 'student') {
-      const now = getBeijingNow();
-      const weekKey = formatWeekKey(now);
-      const deadline = getStudentDeadline(weekKey);
-      const openAt = await getConfiguredStudentOpenTime(weekKey);
-      // 读取周级豁免：extend_student_tr 同时放开“开始新会话”
-      let effectiveDeadline = deadline;
-      if (payload?.userId) {
-        try {
-          const over = await getWeeklyOverrideUntil(payload.userId, weekKey, 'extend_student_tr');
-          if (over) effectiveDeadline = over;
-        } catch {}
-      }
-      // 开放前直接禁止
-      if (now < openAt) {
-        return reply.status(403).send({ error: 'forbidden', code: 'student_not_open_yet', message: '本周对话将在周二0:00开放（北京时间）' });
-      }
-      if (now > effectiveDeadline) {
-        return reply.status(403).send({ error: 'forbidden', code: 'student_locked_for_week', message: '本周已失去开启对话权限（北京时间）' });
-      }
-    }
-    // 结合进度与配额（仅学生适用）：
-    const db = createDb();
-    if ((req as any).auth?.role === 'student') {
+      const db = createDb();
       // 若存在未完成会话，禁止创建下一次，返回进行中的会话信息
       const [lastRow] = await db.select().from(sessions).where(eq(sessions.visitorInstanceId, visitorInstanceId)).orderBy(desc(sessions.sessionNumber)).limit(1);
       if (lastRow && !(lastRow as any).finalizedAt) {
         return reply.status(409).send({ error: 'session_unfinished', sessionId: (lastRow as any).id, sessionNumber: (lastRow as any).sessionNumber });
       }
 
-      // 周度配额：每名学生每周仅允许创建一次新会话（窗口内）+ 一小时冷却
-      const now2 = getBeijingNow();
-      const wk = formatWeekKey(now2);
-      const openAt2 = getStudentOpenTime(wk);
-      const deadline2 = getStudentDeadline(wk);
-
-      // 近一小时冷却
+      // 一小时冷却（防刷保护）
+      const now2 = new Date();
       const oneHourAgo = new Date(now2.getTime() - 60 * 60 * 1000);
       const createdRecently = await db
         .select({ id: sessions.id })
@@ -70,22 +43,11 @@ export async function registerSessionRoutes(app: FastifyInstance) {
       if ((createdRecently as any[]).length > 0) {
         return reply.status(403).send({ error: 'forbidden', code: 'cooldown_recent_created', message: '请稍后再开始下一次对话' });
       }
-
-      const createdThisWeek = await db
-        .select({ id: sessions.id })
-        .from(sessions)
-        .where(sql`${sessions.visitorInstanceId} = ${visitorInstanceId} AND ${sessions.createdAt} >= ${openAt2}`);
-      const finishedThisWeek = await db
-        .select({ id: sessions.id })
-        .from(sessions)
-        .where(sql`${sessions.visitorInstanceId} = ${visitorInstanceId} AND ${sessions.finalizedAt} IS NOT NULL AND ${sessions.finalizedAt} >= ${openAt2} AND ${sessions.finalizedAt} <= ${deadline2}`);
-      if ((createdThisWeek as any[]).length > 0 || (finishedThisWeek as any[]).length > 0) {
-        return reply.status(403).send({ error: 'forbidden', code: 'weekly_quota_exhausted', message: '本周新对话名额已使用' });
-      }
     }
 
     // 目标会话编号：基于“已完成”的最大编号 + 1（防止跳级）
-    const rowsCompleted = await db
+    const db2 = createDb();
+    const rowsCompleted = await db2
       .select({ n: sessions.sessionNumber })
       .from(sessions)
       .where(sql`${sessions.visitorInstanceId} = ${visitorInstanceId} AND ${sessions.finalizedAt} IS NOT NULL`)

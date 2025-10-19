@@ -1,8 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../../db/client';
-import { users, assistantStudents, sessions, visitorInstances, visitorTemplates, weeklyCompliance, homeworkSubmissions, homeworkSets, assistantChatMessages } from '../../db/schema';
+import { users, assistantStudents, sessions, visitorInstances, visitorTemplates, homeworkSubmissions, homeworkSets, assistantChatMessages } from '../../db/schema';
 import { eq, desc, and, inArray, asc } from 'drizzle-orm';
-import { computeClassWeekCompliance } from '../../services/compliance';
 
 export async function registerAssistantClassRoutes(app: FastifyInstance) {
   // 行政助教：查看自己班级学生列表
@@ -88,39 +87,86 @@ export async function registerAssistantClassRoutes(app: FastifyInstance) {
     return reply.send({ items: rows.map(r => ({ sessionId: (r as any).id, sessionNumber: (r as any).sessionNumber, createdAt: (r as any).createdAt })) });
   });
 
-  // 行政助教：周合规报告
-  app.get('/assistant-class/compliance', {
-    schema: {
-      querystring: {
-        type: 'object',
-        properties: { week: { type: 'string' } },
-      },
-    },
-  }, async (req, reply) => {
+  // 行政助教：按作业包统计的合规概览（替代“按周”）
+  // 返回每个作业包在本班的汇总：{ setId, sequenceNumber, title?, studentStartAt, studentDeadline, assistantDeadline, totalStudents, sessionsStarted, submissions, feedbacks }
+  app.get('/assistant-class/compliance', async (req, reply) => {
     const payload = (app as any).requireRole(req, ['assistant_class', 'admin']);
     const db = createDb();
-    const { week } = req.query as any;
-
     // 选择一个授权班级进行计算；默认取第一个
     const classIds: number[] = Array.isArray((payload as any).classScopes)
       ? (payload as any).classScopes.filter((s: any) => s.role === 'assistant_class' && s.classId).map((s: any) => s.classId)
       : (payload as any).classId ? [(payload as any).classId] : [];
     const cid = classIds[0] || (payload as any).classId;
-    await computeClassWeekCompliance(cid, week);
 
-    const rows = await db.select().from(weeklyCompliance).where(eq(weeklyCompliance.classId as any, cid));
-    const items = (rows as any[]).filter(r => !week || r.weekKey === week);
-
-    // 计算 missCountUptoWeek（截止当前周为止的累计未完成次数）
-    const upto = (wk: string) => wk; // 占位，直接用筛选
-    const weeksUpto = (rows as any[]).filter(r => !week || r.weekKey <= week);
-    const missByStudent = new Map<string, number>();
-    for (const r of weeksUpto as any[]) {
-      const miss = (r.hasSession === 0 || r.hasThoughtRecordByFri === 0) ? 1 : 0;
-      missByStudent.set(r.studentId, (missByStudent.get(r.studentId) || 0) + miss);
+    // 查出要统计的作业包集合
+    let setRows: any[] = [];
+    if (!cid) {
+      // admin 无班级作用域：统计所有班级的作业包
+      setRows = await db.select().from(homeworkSets).orderBy(desc(homeworkSets.updatedAt as any));
+    } else {
+      setRows = await db.select().from(homeworkSets).where(eq(homeworkSets.classId as any, cid)).orderBy(desc(homeworkSets.sequenceNumber as any));
     }
-    const enriched = items.map((r: any) => ({ ...r, missCountUptoWeek: missByStudent.get(r.studentId) || 0 }));
-    return reply.send({ items: enriched });
+
+    const items: any[] = [];
+    for (const setRow of setRows as any[]) {
+      const sn = (setRow as any).sequenceNumber as number;
+      const classIdOfSet = Number((setRow as any).classId);
+      // 对应班级学生
+      const stuRows = await db.select().from(users).where(eq(users.classId as any, classIdOfSet));
+      const students = (stuRows as any[]).filter(r => r.role === 'student');
+      const totalStudents = students.length;
+      let sessionsStarted = 0;
+      let submissions = 0;
+      let feedbacks = 0;
+
+      for (const stu of students as any[]) {
+        const vis = await db.select().from(visitorInstances).where(eq(visitorInstances.userId as any, (stu as any).id));
+        if (!(vis as any[]).length) continue;
+        const inst = vis[0] as any;
+        // 学生是否有该次会话
+        const sessRows = await db.select().from(sessions).where(eq(sessions.visitorInstanceId as any, inst.id));
+        const target = (sessRows as any[]).find(r => (r as any).sessionNumber === sn);
+        if (target) {
+          sessionsStarted += 1;
+          const [sub] = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, (target as any).id));
+          if (sub) submissions += 1;
+          // 助教反馈：同 progress 接口定义，优先取“提交之后”的最新助教消息，否则取最近助教消息
+          const msgsDesc = await db
+            .select({ content: assistantChatMessages.content, createdAt: assistantChatMessages.createdAt })
+            .from(assistantChatMessages)
+            .where(and(
+              eq(assistantChatMessages.sessionId as any, (target as any).id),
+              eq(assistantChatMessages.senderRole as any, 'assistant_tech' as any),
+            ))
+            .orderBy(desc(assistantChatMessages.createdAt as any));
+          let hasFeedback = false;
+          if (sub) {
+            for (const m of msgsDesc as any[]) {
+              if (new Date((m as any).createdAt) >= new Date((sub as any).createdAt)) { hasFeedback = true; break; }
+            }
+          }
+          if (!hasFeedback && (msgsDesc as any[]).length) hasFeedback = true;
+          if (hasFeedback) feedbacks += 1;
+        }
+      }
+
+      items.push({
+        setId: (setRow as any).id,
+        classId: classIdOfSet,
+        sequenceNumber: sn,
+        title: (setRow as any).title,
+        studentStartAt: (setRow as any).studentStartAt,
+        studentDeadline: (setRow as any).studentDeadline,
+        assistantStartAt: (setRow as any).assistantStartAt,
+        assistantDeadline: (setRow as any).assistantDeadline,
+        totalStudents,
+        sessionsStarted,
+        submissions,
+        feedbacks,
+      });
+    }
+
+    return reply.send({ items });
   });
 
   // 行政助教：按“第N次会话”查看完成情况（不按自然周）
@@ -182,9 +228,14 @@ export async function registerAssistantClassRoutes(app: FastifyInstance) {
       ? (payload as any).classScopes.filter((s: any) => s.role === 'assistant_class' && s.classId).map((s: any) => s.classId)
       : (payload as any).classId ? [(payload as any).classId] : [];
     const cid = classIds[0] || (payload as any).classId;
-    if (!cid) return reply.send({ items: [] });
-    const rows = await db.select().from(homeworkSets).where(eq(homeworkSets.classId as any, cid)).orderBy(desc(homeworkSets.sequenceNumber as any));
-    const items = (rows as any[]).map((r: any) => ({ id: r.id, title: r.title, description: r.description, sequenceNumber: r.sequenceNumber, studentStartAt: r.studentStartAt, studentDeadline: r.studentDeadline, assistantStartAt: r.assistantStartAt, assistantDeadline: r.assistantDeadline, status: r.status }));
+    let rows: any[] = [];
+    if (!cid) {
+      // admin 无班级作用域：返回所有作业包
+      rows = await db.select().from(homeworkSets).orderBy(desc(homeworkSets.updatedAt as any));
+    } else {
+      rows = await db.select().from(homeworkSets).where(eq(homeworkSets.classId as any, cid)).orderBy(desc(homeworkSets.sequenceNumber as any));
+    }
+    const items = (rows as any[]).map((r: any) => ({ id: r.id, title: r.title, description: r.description, sequenceNumber: r.sequenceNumber, studentStartAt: r.studentStartAt, studentDeadline: r.studentDeadline, assistantStartAt: r.assistantStartAt, assistantDeadline: r.assistantDeadline, status: r.status, classId: r.classId }));
     return reply.send({ items });
   });
 
@@ -196,16 +247,17 @@ export async function registerAssistantClassRoutes(app: FastifyInstance) {
     const classIds: number[] = Array.isArray((payload as any).classScopes)
       ? (payload as any).classScopes.filter((s: any) => s.role === 'assistant_class' && s.classId).map((s: any) => s.classId)
       : (payload as any).classId ? [(payload as any).classId] : [];
-    const cid = classIds[0] || (payload as any).classId;
-    if (!cid) return reply.send({ items: [] });
+    let cid = classIds[0] || (payload as any).classId;
 
-    // 读取班级学生
+    // 先读取作业包以获取其班级
+    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
+    if (!setRow) return reply.status(404).send({ error: 'not_found' });
+    if (!cid) cid = Number((setRow as any).classId); // admin 无作用域：回退为该作业包的班级
+
     const stuRows = await db.select().from(users).where(eq(users.classId as any, cid));
     const students = (stuRows as any[]).filter(r => r.role === 'student');
 
     // 找到该作业集的序号（与会话号对齐）
-    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
-    if (!setRow) return reply.status(404).send({ error: 'not_found' });
     const sn = (setRow as any).sequenceNumber as number;
 
     const items: any[] = [];

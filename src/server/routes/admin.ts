@@ -621,6 +621,21 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const body = (req.body || {}) as any;
     const required = ['classId','sequenceNumber','formFields','studentStartAt','studentDeadline','assistantStartAt','assistantDeadline'];
     for (const k of required) if (body[k] === undefined || body[k] === null) return reply.status(400).send({ error: 'bad_request', message: `missing ${k}` });
+    // 顺序校验：每个班级的 sequenceNumber 必须严格递增（1,2,3...）
+    try {
+      const cid = Number(body.classId);
+      const latest = await db
+        .select({ n: homeworkSets.sequenceNumber })
+        .from(homeworkSets)
+        .where(eq(homeworkSets.classId as any, cid))
+        .orderBy(desc(homeworkSets.sequenceNumber as any))
+        .limit(1);
+      const expected = (latest as any[]).length ? Number((latest[0] as any).n) + 1 : 1;
+      const incoming = Number(body.sequenceNumber);
+      if (incoming !== expected) {
+        return reply.status(400).send({ error: 'invalid_sequence', message: `class ${cid} expected next sequenceNumber = ${expected}` });
+      }
+    } catch {}
     const item = {
       id: createId(),
       classId: Number(body.classId),

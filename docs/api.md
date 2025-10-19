@@ -41,12 +41,12 @@ POST `/sessions/start`
 语义
 - 默认启用“后端自增会话号”，按该实例当前最大 `session_number` 自动 +1。
 - 返回 `sessionId` 与实际分配的 `sessionNumber`。随后前端使用该 `sessionId` 追加消息。
-- 学生专属窗口与限流（助教/admin/playground 不受以下限制）：
-  - 开放窗口：周二 00:00 ~ 周五 24:00（北京时间）。周二之前 → `403 student_not_open_yet`；周五之后 → `403 student_locked_for_week`。
-  - 周度配额：一周仅允许创建一次新会话（窗口期内，如本周已创建/已完成过任一会话）→ `403 weekly_quota_exhausted`。
+- 学生专属窗口（助教/admin/playground 不受限制）：
+  - 绝对时间窗口：必须存在该班“第 N 次作业包（homework_sets）”，且当前时间位于该包 `studentStartAt ~ studentDeadline` 之间才能开始第 N 次会话；否则：
+    - 无对应包 → `403 package_missing`
+    - 不在窗口内 → `403 package_window_closed`
   - 一小时冷却：近 1 小时内已经创建过新会话 → `403 cooldown_recent_created`。
   - 未完成阻断：存在未结束的会话 → `409 session_unfinished`（返回 `{ sessionId, sessionNumber }`）。
-  - 周级豁免 `extend_student_tr`：放宽“封窗时间”（截止到 `until`），但不绕过配额/冷却/未完成检查。
 
 配置项（Admin 可在“时间窗设置”修改）：
 - `student_open_weekday` 默认 `2`（周二 00:00 开放）
@@ -63,18 +63,11 @@ curl -X POST http://localhost:3000/sessions/start \
   -H "Content-Type: application/json" \
   -d '{"visitorInstanceId":"VI-UUID"}'
 
-# 学生窗口未开（周二 00:00 之前）
-curl -i -X POST http://localhost:3000/sessions/start \
-  -H "Authorization: Bearer $STU_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"visitorInstanceId":"VI-UUID"}'
-# → 403 {"error":"forbidden","code":"student_not_open_yet"}
+# 无对应作业包
+# → 403 {"error":"forbidden","code":"package_missing"}
 
-# 学生本周封窗（周五 24:00 之后，除非存在 extend_student_tr 豁免）
-# → 403 {"error":"forbidden","code":"student_locked_for_week"}
-
-# 学生一周已使用名额
-# → 403 {"error":"forbidden","code":"weekly_quota_exhausted"}
+# 不在该作业包窗口内
+# → 403 {"error":"forbidden","code":"package_window_closed"}
 
 # 一小时冷却中
 # → 403 {"error":"forbidden","code":"cooldown_recent_created"}
@@ -282,6 +275,9 @@ Student：
 - 作业包会话对话记录：GET `/assistant-class/homework/sets/{id}/feedback?studentId=...&page=1&pageSize=50`
   - 返回：`{ items: [{ speaker: 'assistant'|'student', content, timestamp }], page, pageSize, total }`
   - 说明：按时间升序分页返回该学生在该作业包对应会话里的双向消息，用于“查看对话”滑动窗口展示。
+
+- getPackageCompliance() → GET `/assistant-class/compliance`（按作业包汇总合规概览）
+  - 返回：`{ items: [{ setId, sequenceNumber, title?, studentStartAt, studentDeadline, assistantStartAt, assistantDeadline, totalStudents, sessionsStarted, submissions, feedbacks }] }`
 
 ---
 
