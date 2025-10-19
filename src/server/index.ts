@@ -59,6 +59,38 @@ export async function buildServer() {
     }
   });
 
+  // 版本信息与可观测性：返回构建 ID、时间等
+  // - 优先读取运行目录中的 BUILD_INFO.json（由部署脚本生成）
+  // - 若不存在则回退到环境变量 BUILD_ID 与当前时间
+  async function loadBuildInfo() {
+    try {
+      const fs = await import('node:fs/promises');
+      const path = await import('node:path');
+      const p = path.join(process.cwd(), 'BUILD_INFO.json');
+      const txt = await fs.readFile(p, 'utf8');
+      const json = JSON.parse(txt);
+      return json;
+    } catch {
+      return {
+        buildId: process.env.BUILD_ID || 'unknown',
+        time: new Date().toISOString(),
+      } as any;
+    }
+  }
+
+  app.get('/version', async (_req, reply) => {
+    try {
+      const info = await loadBuildInfo();
+      return reply.send({
+        ...info,
+        service: 'cbt-api',
+        env: process.env.NODE_ENV || 'production',
+      });
+    } catch (e: any) {
+      return reply.status(500).send({ error: 'version_failed', message: e?.message });
+    }
+  });
+
   return app;
 }
 

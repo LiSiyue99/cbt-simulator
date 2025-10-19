@@ -28,6 +28,22 @@ if [ -s "$NVM" ]; then . "$NVM"; nvm use 20 >/dev/null; fi
 cd "$RELEASE_DIR"
 npm ci
 
+# 生成构建信息文件，供 /version 读取
+GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "local")
+BUILD_ID="${ts}-${GIT_SHA}"
+cat > "$RELEASE_DIR/BUILD_INFO.json" << EOF
+{
+  "buildId": "$BUILD_ID",
+  "release": "$RELEASE_DIR",
+  "time": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+
+# 若环境文件中未包含 BUILD_ID，则追加（兜底）
+if [ -f "$RELEASE_DIR/.env.production" ] && ! grep -q '^BUILD_ID=' "$RELEASE_DIR/.env.production"; then
+  echo "BUILD_ID=$BUILD_ID" >> "$RELEASE_DIR/.env.production"
+fi
+
 cat > "$RELEASE_DIR/run-api.sh" <<'EOS'
 #!/usr/bin/env bash
 set -e
