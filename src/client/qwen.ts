@@ -58,7 +58,7 @@ export async function chatComplete(params: {
     try {
       const client = createClientWithKey(key);
       const completion = await client.chat.completions.create({
-        model: params.model ?? 'qwen-flash',
+        model: params.model ?? 'deepseek-v3.2-exp',
         messages: params.messages,
       });
       return completion.choices[0].message.content ?? '';
