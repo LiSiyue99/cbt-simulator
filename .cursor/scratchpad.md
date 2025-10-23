@@ -305,9 +305,9 @@ Lessons
 
 ---
 
-## Executor – 前端生产部署“修复与验证”Playbook（可复制执行）
+## Executor – 前端生产部署"修复与验证"Playbook（可复制执行）
 
-背景：线上出现“直登未生效/历史构建残留/Turbopack Panic/目录混杂”等问题。以下步骤一次性将前端部署切换为不可变发布（releases + current 软链）、禁用 Turbopack、清理缓存并加强验证。
+背景：线上出现"直登未生效/历史构建残留/Turbopack Panic/目录混杂"等问题。以下步骤一次性将前端部署切换为不可变发布（releases + current 软链）、禁用 Turbopack、清理缓存并加强验证。
 
 前提：本地用 `scripts/deploy-web-local.sh` 生成 tgz（已排除 `.env.local/.next`）。服务器已放置 `/root/bin/deploy-cbt-web.sh`（脚本已加固）。
 
@@ -339,7 +339,7 @@ fi
 ```bash
 curl -I https://aiforcbt.online/api/health   # 200
 curl -s https://aiforcbt.online/login | grep -E "直接登录|获取验证码" -n
-# 期望出现“直接登录”；若仍显示“获取验证码”，进一步排查：
+# 期望出现"直接登录"；若仍显示"获取验证码"，进一步排查：
 grep -R "NEXT_PUBLIC_LOGIN_FLOW" /opt/cbt/web/current/.next -n || true
 grep -R "直接登录" /opt/cbt/web/current/.next -n || true
 ```
@@ -369,7 +369,7 @@ nginx -t && systemctl reload nginx
 
 验收标准：
 - `/api/health` 返回 200 且包含 buildId（如已配置）
-- `/login` 页面显示“直接登录”；浏览器硬刷新或无痕模式验证仍为直登
+- `/login` 页面显示"直接登录"；浏览器硬刷新或无痕模式验证仍为直登
 - `pm2 list` 中 `cbt-web` 运行且 `--cwd` 指向 `/opt/cbt/web/current`
 
 ## Executor's Feedback or Assistance Requests
@@ -1182,5 +1182,82 @@ Project Status Board（本轮任务）
 - [ ] 前端：隐藏 Sidebar 的 Playground 入口（或加开关，默认 off）
 - [ ] 后端：重构 `/dashboard/todos` 以 package 为唯一 DDL 来源
 - [ ] 验收：未配置 package 的班级不再出现 DDL；配置后 dueDate 精确等于 Admin 设置
+
+
+---
+
+## Planner – 学生会话重置与作业可修改（新功能）
+
+Background and Motivation
+- 学生希望在当前轮（第 N 次）对话中可"一键重置"。
+  - 若尚未布置作业（未 finalize 且无提交）：仅清空本轮会话的 chatHistory 后重新聊天（Soft Reset）。
+  - 若已布置作业/已生成产物：需要彻底回滚本轮（Hard Reset）：清空 chatHistory、移除该轮作业提交、清空 session 日志/活动，并将 LTM 回滚至本轮产出前的版本，同时让助教端的统计/待办自然减少（无需额外删除聊天消息）。
+- 已提交的作业允许学生在窗口内进行修改（Update），每次更新需提醒助教"有变更"。助教-学生即时聊天窗口不受影响。
+
+Key Challenges and Analysis
+- LTM 回滚的边界：当前 schema 具备 `long_term_memory_versions`（按 visitorInstanceId + createdAt 记录），本轮 finalize/prepare 会产生 1~2 条版本记录。Hard Reset 需要：
+  - 删除"在该 session 创建时间之后"的所有 LTM 版本；
+  - 将 `visitor_instances.long_term_memory` 回置为剩余历史中的最新一条（若无则置为空结构）。
+- 统计一致性：我们现有"待批改"统计以 `homework_submissions.updatedAt` 与助教消息时间对比得出；删除提交或更新提交后，统计会自然变化，无需特判。
+- 权限与窗口：作业修改（PUT）仍需处于该 package 的学生窗口 `studentStartAt ~ studentDeadline` 内；Reset 不需要窗口校验，但仅限该会话的所有者（学生）。
+
+High-level Task Breakdown
+1) 后端接口（sessions.ts / assistant.ts 无需改）
+   - POST `/sessions/:sessionId/reset` { mode?: 'auto'|'soft'|'hard' }
+     - 授权：仅 session 所属实例的学生本人。
+     - 判定：若 session 未 finalize 且无提交 → soft；否则 → hard；也允许显式传入 mode 强制（仅用于回归测试）。
+     - Soft：`sessions.chatHistory = []`，`updatedAt=now`。
+     - Hard：
+       - 删除 `homework_submissions`(by sessionId)。
+       - 更新 `sessions`：`chatHistory=[], sessionDiary=null, preSessionActivity=null, finalizedAt=null, homework=null, updatedAt=now`。
+       - LTM 回滚：删除 `long_term_memory_versions` 中 `createdAt >= session.createdAt` 的记录；把 `visitor_instances.long_term_memory` 设为"剩余历史最新一条"的 content（若无则设为空默认）。
+     - 返回：`{ ok: true, mode: 'soft'|'hard' }`。
+2) 后端接口（homework 提交可修改）
+   - PUT `/homework/submissions` { sessionId, formData }
+     - 授权：学生本人；窗口校验：存在匹配的 `homework_sets`（按 classId + sessionNumber）且 `now` 处于学生窗口内。
+     - 行为：更新 `homework_submissions.formData` 与 `updatedAt=now`；若不存在则 404（保持"创建用 POST，修改用 PUT"的清晰语义）。
+     - 助教提醒：插入一条 `assistant_chat_messages`（senderRole='student'，content='学生更新了作业提交'，status='unread'），以触发既有未读数和待办变化；同时因 updatedAt 变化，待批改判定也会自然重新计算。
+     - 返回：`{ ok: true, id }`。
+3) 前端（学生端）
+   - `dashboard/conversation/page.tsx`：
+     - 在"当前会话工具栏"增加"重置本轮对话"按钮；点击弹出对话框：
+       - 若系统判定将执行 Hard Reset，弹窗文案需明确会清空"对话/已布置作业/日记/活动/LTM回滚"，操作不可撤销。
+       - 调用 POST `/sessions/{id}/reset`，成功后刷新该会话数据（或重新加载 `GET /sessions/last`）。
+   - `dashboard/assignments/page.tsx`（学生作业页）：
+     - 若已存在提交：表单可切换为"编辑模式"，按钮文案"保存修改"；提交调用 `PUT /homework/submissions`。
+     - 保存成功后给出 toast："已更新，助教已收到提醒"。
+4) 文档
+   - `docs/api.md` 与 `web/FRONTEND_API.md`：新增以上两个端点，补充请求/响应、权限、窗口校验与行为说明；在学生页面说明 Reset 的两种结果与不可撤销提示。
+
+Success Criteria
+- Soft Reset：调用后该 session 的 chatHistory 为空；前端重新进入聊天页即为全新开始；不影响作业/日记/活动/LTM。
+- Hard Reset：
+  - `homework_submissions` 中该 session 记录不存在；
+  - `sessions` 相关字段已清空；
+  - `visitor_instances.long_term_memory` 回到本轮前的版本；`long_term_memory_versions` 删除了本轮产生的条目；
+  - 行政/助教端"待批改/未读统计"随之减少或重算，无 500 错误。
+- 作业可修改：PUT 成功更新表单，产生一条"学生更新了作业提交"的未读提醒；助教端看到"待批改"按 updatedAt 重新计算。
+
+API Design (Draft)
+- POST `/sessions/:sessionId/reset`
+  - Resp: `{ ok: true, mode: 'soft'|'hard' }`
+  - Errors: `401 unauthorized` | `403 forbidden` | `404 session_not_found`
+- PUT `/homework/submissions`
+  - Req: `{ sessionId: string, formData: Record<string, string|number|boolean> }`
+  - Resp: `{ ok: true, id: string }`
+  - Errors: `401` | `403 package_window_closed|package_missing` | `404 submission_not_found`
+
+Project Status Board（本功能）
+- [ ] 后端：实现 POST `/sessions/:sessionId/reset`（含 LTM 回滚与软/硬分支）
+- [ ] 后端：实现 PUT `/homework/submissions`（窗口校验 + 助教提醒）
+- [ ] 前端（学生-会话页）：增加"重置本轮对话"按钮与确认弹窗
+- [ ] 前端（学生-作业页）：已交情况下允许编辑并调用 PUT 更新
+- [ ] 文档：更新 `docs/api.md` 与 `web/FRONTEND_API.md` 新端点与示例
+- [ ] 验收：软/硬重置各 1 用例 + 作业修改用例，助教端统计自然变化
+
+Executor's Feedback or Assistance Requests（需你确认）
+- Reset 是否允许"强制 hard 模式"按钮？当前仅服务端自动判定（soft/硬）；也可保留 `mode` 参数仅在测试工具中使用。
+- 作业修改是否需记录"变更历史"（目前仅更新时间与内容覆盖，无版本快照）。若需要，后续可加 `homework_submission_versions`。
+- Hard Reset 是否需要新增"系统消息"告知助教"该轮被学生重置"？（目前未新增，保持静默以免打扰）。
 
 

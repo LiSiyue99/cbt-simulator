@@ -204,6 +204,81 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
     return reply.send({ item: row || null });
   });
 
+  // 学生端：修改已存在的作业提交（窗口内允许），并提醒助教
+  app.put('/homework/submissions', {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['sessionId','formData'],
+        properties: {
+          sessionId: { type: 'string' },
+          formData: { type: 'object' },
+        },
+      },
+    },
+    config: {
+      rateLimit: {
+        max: Number(process.env.RATELIMIT_HOMEWORK_UPDATE_MAX || 6),
+        timeWindow: process.env.RATELIMIT_HOMEWORK_UPDATE_WINDOW || '1 minute',
+        keyGenerator: (req: any) => (req?.auth?.userId) || req.ip,
+      }
+    }
+  }, async (req, reply) => {
+    const db = createDb();
+    const payload = (req as any).auth;
+    const { sessionId, formData } = (req.body || {}) as any;
+
+    // 拥有权校验
+    const [s] = await db.select().from(sessions).where(eq(sessions.id as any, sessionId));
+    if (!s) return reply.status(404).send({ error: 'session not found' });
+    const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, (s as any).visitorInstanceId));
+    if (!inst) return reply.status(404).send({ error: 'visitor instance not found' });
+    if (!payload || payload.role !== 'student' || payload.userId !== (inst as any).userId) return reply.status(403).send({ error: 'forbidden' });
+
+    // 定位对应的作业集（用于窗口与字段校验）
+    const [stu] = await db.select({ id: users.id, classId: users.classId }).from(users).where(eq(users.id as any, (inst as any).userId));
+    const [setRow] = await db.select().from(homeworkSets)
+      .where(and(eq(homeworkSets.classId as any, (stu as any).classId), eq(homeworkSets.sequenceNumber as any, (s as any).sessionNumber)))
+      .orderBy(desc(homeworkSets.updatedAt as any));
+    if (!setRow) return reply.status(403).send({ error: 'forbidden', code: 'package_missing' });
+    const now = new Date();
+    if (!(now >= (setRow as any).studentStartAt && now <= (setRow as any).studentDeadline)) {
+      return reply.status(403).send({ error: 'forbidden', code: 'package_window_closed' });
+    }
+
+    // 字段必填校验
+    const fields = ((setRow as any).formFields || []) as any[];
+    for (const f of fields) {
+      if (!(f.key in (formData || {}))) return reply.status(400).send({ error: 'bad_request', message: `missing field ${f.key}` });
+      const v = (formData || {})[f.key];
+      if (v === null || v === undefined || (typeof v === 'string' && v.trim() === '')) {
+        return reply.status(400).send({ error: 'bad_request', message: `empty field ${f.key}` });
+      }
+    }
+
+    const [sub] = await db.select().from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, sessionId));
+    if (!sub) return reply.status(404).send({ error: 'submission_not_found' });
+
+    await db.update(homeworkSubmissions)
+      .set({ formData: formData as any, updatedAt: new Date() } as any)
+      .where(eq(homeworkSubmissions.sessionId as any, sessionId));
+
+    // 助教提醒：插入一条未读消息（统一走 assistant chat 通道）
+    try {
+      const msg = `学生更新了作业提交（第${(s as any).sessionNumber}次）`;
+      await db.insert(assistantChatMessages).values({
+        id: crypto.randomUUID(),
+        sessionId,
+        senderRole: 'student' as any,
+        senderId: (inst as any).userId,
+        content: msg,
+        createdAt: new Date(),
+      } as any);
+    } catch {}
+
+    return reply.send({ ok: true, id: (sub as any).id, updated: true });
+  });
+
   // Dashboard 待办事项接口
   app.get('/dashboard/todos', {
     schema: {

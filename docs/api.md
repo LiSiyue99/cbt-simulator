@@ -168,6 +168,26 @@ POST `/sessions/{sessionId}/ensure-outputs`
 
 ---
 
+### 2.7）重置会话（Soft/Hard Reset）
+POST `/sessions/{sessionId}/reset`
+
+请求体
+```json
+{ "mode": "auto" | "soft" | "hard" }
+```
+
+说明
+- 授权：仅该会话所属实例的学生本人。
+- 行为：
+  - soft：仅清空本轮 `chatHistory`。
+  - hard：删除该会话的作业提交，清空 `sessionDiary/preSessionActivity/finalizedAt/homework/chatHistory`，并将实例 LTM 回滚至本轮创建前的版本（删除 `long_term_memory_versions` 在该会话 `createdAt` 及之后的记录）。
+- 返回：`{ ok: true, mode: "soft"|"hard" }`
+
+错误
+- 404 `session not found` | 403 `forbidden`
+
+---
+
 ### 2.6）读取会话历史列表（分页）
 GET `/sessions/list?visitorInstanceId=...&page=1&pageSize=20&includePreview=true`
 
@@ -235,6 +255,7 @@ Admin：
 Student：
 - 按会话读取作业集：GET `/homework/sets/by-session?sessionId=...`
 - 提交作业（仅一次）：POST `/homework/submissions` → `{ ok, id }`
+- 修改作业（窗口内允许）：PUT `/homework/submissions` → `{ ok, id, updated: true }`
 - 若重复提交：返回 409 → `{ "error": "conflict", "code": "submission_exists" }`
 - 查询提交：GET `/homework/submissions?sessionId=...`
 

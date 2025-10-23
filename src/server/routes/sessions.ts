@@ -422,6 +422,94 @@ export async function registerSessionRoutes(app: FastifyInstance) {
       hasLtm: ltmOk && ltmHist.length > 0,
     });
   });
+
+  // 重置会话：支持 soft/hard 两种模式（允许强制 hard）
+  app.post('/sessions/:sessionId/reset', {
+    schema: {
+      params: { type: 'object', required: ['sessionId'], properties: { sessionId: { type: 'string' } } },
+      body: {
+        type: 'object',
+        properties: { mode: { type: 'string', enum: ['auto', 'soft', 'hard'] } },
+      },
+    },
+  }, async (req, reply) => {
+    const db = createDb();
+    const { sessionId } = req.params as any;
+    const body = (req.body || {}) as any;
+    const desiredMode = body.mode as ('auto'|'soft'|'hard'|undefined);
+
+    // 读取会话并校验所有权（仅学生所有者可重置）
+    const [row] = await db.select().from(sessions).where(eq(sessions.id, sessionId));
+    if (!row) return reply.status(404).send({ error: 'session not found' });
+    const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, (row as any).visitorInstanceId));
+    if (!inst) return reply.status(404).send({ error: 'visitor instance not found' });
+    if ((req as any).auth?.role !== 'student' || (req as any).auth?.userId !== (inst as any).userId) {
+      return reply.status(403).send({ error: 'forbidden' });
+    }
+
+    // 判定 soft/hard（可被强制覆盖）
+    let mode: 'soft' | 'hard' = 'soft';
+    if (desiredMode === 'hard') mode = 'hard';
+    else if (desiredMode === 'soft') mode = 'soft';
+    else {
+      const subRows = await db.select({ id: homeworkSubmissions.id }).from(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, sessionId));
+      const hasSubmission = (subRows as any[]).length > 0;
+      const finalized = !!(row as any).finalizedAt;
+      mode = (!finalized && !hasSubmission) ? 'soft' : 'hard';
+    }
+
+    // Soft：仅清空聊天记录
+    if (mode === 'soft') {
+      await db.update(sessions)
+        .set({ chatHistory: [] as any, updatedAt: new Date() } as any)
+        .where(eq(sessions.id as any, sessionId));
+      return reply.send({ ok: true, mode });
+    }
+
+    // Hard：删除提交、清空会话产物、回滚 LTM
+    // 1) 删除该 session 的提交
+    await db.delete(homeworkSubmissions).where(eq(homeworkSubmissions.sessionId as any, sessionId));
+
+    // 2) 清空会话产物
+    await db.update(sessions).set({
+      chatHistory: [] as any,
+      sessionDiary: null as any,
+      preSessionActivity: null as any,
+      finalizedAt: null as any,
+      homework: null as any,
+      updatedAt: new Date(),
+    } as any).where(eq(sessions.id as any, sessionId));
+
+    // 3) 回滚 LTM：删除 session.createdAt 及之后的版本；将实例 LTM 设为剩余历史最新值或空默认
+    const createdAt = (row as any).createdAt as Date;
+    const visitorInstanceId = (row as any).visitorInstanceId as string;
+    try {
+      await db.delete(longTermMemoryVersions)
+        .where(and(
+          eq(longTermMemoryVersions.visitorInstanceId as any, visitorInstanceId),
+          sql`${longTermMemoryVersions.createdAt} >= ${createdAt}`
+        ));
+    } catch {}
+
+    const [latest] = await db.select({ content: longTermMemoryVersions.content, createdAt: longTermMemoryVersions.createdAt })
+      .from(longTermMemoryVersions)
+      .where(eq(longTermMemoryVersions.visitorInstanceId as any, visitorInstanceId))
+      .orderBy(desc(longTermMemoryVersions.createdAt as any))
+      .limit(1);
+
+    const defaultLtm = {
+      thisweek_focus: '',
+      discussed_topics: '',
+      milestones: '',
+      recurring_patterns: '',
+      core_belief_evolution: '',
+    } as any;
+    await db.update(visitorInstances)
+      .set({ longTermMemory: (latest as any)?.content ?? defaultLtm, updatedAt: new Date() } as any)
+      .where(eq(visitorInstances.id as any, visitorInstanceId));
+
+    return reply.send({ ok: true, mode });
+  });
 }
 
 
