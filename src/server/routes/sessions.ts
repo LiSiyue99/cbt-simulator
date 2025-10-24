@@ -418,6 +418,138 @@ export async function registerSessionRoutes(app: FastifyInstance) {
     return reply.send({ ok: true });
   });
 
+  // 重生成：学生可对“最后一条 AI 回复”执行重试
+  app.post('/sessions/:sessionId/retry-last', {
+    schema: {
+      params: { type: 'object', required: ['sessionId'], properties: { sessionId: { type: 'string' } } },
+    },
+    config: {
+      rateLimit: {
+        max: Number(process.env.RATELIMIT_CHAT_RETRY_MAX || 6),
+        timeWindow: process.env.RATELIMIT_CHAT_RETRY_WINDOW || '1 minute',
+        keyGenerator: (req: any) => (req?.auth?.userId) || req.ip,
+      }
+    }
+  }, async (req, reply) => {
+    const { sessionId } = req.params as any;
+    const db = createDb();
+
+    // 所有权校验：仅该实例所有者（学生）可重试
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId));
+    if (!session) return reply.status(404).send({ error: 'session not found' });
+    const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, (session as any).visitorInstanceId));
+    if (!inst) return reply.status(404).send({ error: 'visitor instance not found' });
+    if ((req as any).auth?.role !== 'student' || (req as any).auth?.userId !== (inst as any).userId) {
+      return reply.status(403).send({ error: 'forbidden' });
+    }
+
+    // 历史必须以 AI 结尾，且前一条为 user，重试将移除最后 AI 再重新生成
+    const history = Array.isArray((session as any).chatHistory) ? ((session as any).chatHistory as any[]) : [];
+    if (history.length === 0) return reply.status(400).send({ error: 'bad_request', message: 'empty_history' });
+    const last = history[history.length - 1];
+    if ((last as any).speaker !== 'ai') return reply.status(400).send({ error: 'bad_request', message: 'last_turn_not_ai' });
+    const hasUserBefore = history.slice(0, -1).some(t => (t as any).speaker === 'user');
+    if (!hasUserBefore) return reply.status(400).send({ error: 'bad_request', message: 'no_user_turn_before' });
+
+    // 1) 先移除最后一条 AI 回复（保证幂等与原子性）
+    const truncated = history.slice(0, -1);
+    await db.update(sessions).set({ chatHistory: truncated as any, updatedAt: new Date() } as any).where(eq(sessions.id as any, sessionId));
+
+    // 2) 组装 persona 与对话，基于“移除后的历史”生成新回复
+    const [visitorTemplate] = await db.select().from(visitorTemplates).where(eq(visitorTemplates.id as any, (inst as any).templateId));
+    if (!visitorTemplate) return reply.status(404).send({ error: 'visitor template not found' });
+    const fullPersona: FullPersona = {
+      corePersona: typeof (visitorTemplate as any).corePersona === 'string' ? (visitorTemplate as any).corePersona : JSON.stringify((visitorTemplate as any).corePersona || ''),
+      chatPrinciple: (visitorTemplate as any).chatPrinciple || '',
+      longTermMemory: (inst as any).longTermMemory || ''
+    };
+    const messages: ChatTurn[] = (truncated as any[]).map((turn: any) => ({
+      role: turn.speaker === 'user' ? 'user' : 'assistant',
+      content: turn.content,
+    }));
+
+    const aiResponse = await chatWithVisitor({ persona: fullPersona, messages });
+
+    // 3) 追加新的 AI 回复
+    await appendChatTurn({ sessionId, speaker: 'ai', content: aiResponse });
+
+    return reply.send({
+      ok: true,
+      aiResponse: { speaker: 'ai', content: aiResponse, timestamp: new Date().toISOString() }
+    });
+  });
+
+  // 回滚到某个用户发言并替换为新内容，再生成新的 AI 回复（原子操作）
+  app.post('/sessions/:sessionId/rollback-replay', {
+    schema: {
+      params: { type: 'object', required: ['sessionId'], properties: { sessionId: { type: 'string' } } },
+      body: {
+        type: 'object',
+        required: ['userIndex', 'newContent'],
+        properties: {
+          userIndex: { type: 'number' },
+          newContent: { type: 'string' },
+        }
+      }
+    },
+    config: {
+      rateLimit: {
+        max: Number(process.env.RATELIMIT_CHAT_ROLLBACK_MAX || 6),
+        timeWindow: process.env.RATELIMIT_CHAT_ROLLBACK_WINDOW || '1 minute',
+        keyGenerator: (req: any) => (req?.auth?.userId) || req.ip,
+      }
+    }
+  }, async (req, reply) => {
+    const { sessionId } = req.params as any;
+    const { userIndex, newContent } = (req.body || {}) as any;
+    const db = createDb();
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId));
+    if (!session) return reply.status(404).send({ error: 'session not found' });
+    if ((session as any).finalizedAt) return reply.status(400).send({ error: 'bad_request', message: 'session_finalized' });
+    const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, (session as any).visitorInstanceId));
+    if (!inst) return reply.status(404).send({ error: 'visitor instance not found' });
+    if ((req as any).auth?.role !== 'student' || (req as any).auth?.userId !== (inst as any).userId) {
+      return reply.status(403).send({ error: 'forbidden' });
+    }
+
+    const history = Array.isArray((session as any).chatHistory) ? ((session as any).chatHistory as any[]) : [];
+    const idx = Number(userIndex);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= history.length) {
+      return reply.status(400).send({ error: 'bad_request', message: 'invalid_index' });
+    }
+    const anchor = history[idx];
+    if ((anchor as any)?.speaker !== 'user') {
+      return reply.status(400).send({ error: 'bad_request', message: 'anchor_not_user' });
+    }
+
+    // 1) 截断到该用户发言之前（不包含该发言）
+    const truncated = history.slice(0, idx);
+    await db.update(sessions).set({ chatHistory: truncated as any, updatedAt: new Date() } as any).where(eq(sessions.id as any, sessionId));
+
+    // 2) 追加新的用户发言
+    await appendChatTurn({ sessionId, speaker: 'user', content: String(newContent || '') });
+
+    // 3) 基于“截断后的历史 + 新用户发言”生成新的 AI 回复
+    const [session2] = await db.select().from(sessions).where(eq(sessions.id, sessionId));
+    const sessionHistory = (session2 as any).chatHistory || [];
+    const messages: ChatTurn[] = (sessionHistory as any[]).map((turn: any) => ({
+      role: turn.speaker === 'user' ? 'user' : 'assistant',
+      content: turn.content,
+    }));
+    const [visitorTemplate] = await db.select().from(visitorTemplates).where(eq(visitorTemplates.id as any, (inst as any).templateId));
+    if (!visitorTemplate) return reply.status(404).send({ error: 'visitor template not found' });
+    const fullPersona: FullPersona = {
+      corePersona: typeof (visitorTemplate as any).corePersona === 'string' ? (visitorTemplate as any).corePersona : JSON.stringify((visitorTemplate as any).corePersona || ''),
+      chatPrinciple: (visitorTemplate as any).chatPrinciple || '',
+      longTermMemory: (inst as any).longTermMemory || ''
+    };
+    const aiResponse = await chatWithVisitor({ persona: fullPersona, messages });
+    await appendChatTurn({ sessionId, speaker: 'ai', content: aiResponse });
+
+    return reply.send({ ok: true, aiResponse: { speaker: 'ai', content: aiResponse, timestamp: new Date().toISOString() } });
+  });
+
   app.post('/sessions/:sessionId/finalize', {
     schema: {
       params: {
