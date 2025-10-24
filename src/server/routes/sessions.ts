@@ -2,8 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { createSession, createSessionAuto, appendChatTurn } from '../../services/sessionCrud';
 import { finalizeSessionById, prepareNewSession } from '../../services/sessionPipeline';
 import { createDb } from '../../db/client';
-import { sessions, visitorInstances, visitorTemplates, longTermMemoryVersions, assistantStudents, homeworkSubmissions, users, homeworkSets } from '../../db/schema';
-import { eq, desc, sql, and } from 'drizzle-orm';
+import { sessions, visitorInstances, visitorTemplates, longTermMemoryVersions, assistantStudents, homeworkSubmissions, users, homeworkSets, deadlineOverrides } from '../../db/schema';
+import { eq, desc, sql, and, or } from 'drizzle-orm';
 // 周维度时间窗已废弃，现改为基于 homework_sets 的绝对窗口；不再引入 policy/timeWindow
 import { chatWithVisitor, type FullPersona, type ChatTurn } from '../../chat/sessionOrchestrator';
 
@@ -76,7 +76,29 @@ export async function registerSessionRoutes(app: FastifyInstance) {
           const startAt = (pkg as any).studentStartAt as Date;
           const deadline = (pkg as any).studentDeadline as Date;
           if (!(now >= startAt && now <= deadline)) {
-            return reply.status(403).send({ error: 'forbidden', code: 'package_window_closed', message: '当前作业包窗口未开放', startAt, deadline });
+            // 窗口关闭 → 检查 set 作用域的定向解锁
+            try {
+              const setId = (pkg as any).id as string;
+              const classId = (pkg as any).classId as number;
+              const studentId = (instRow as any).userId as string;
+              const overRows = await dbCheck
+                .select({ until: deadlineOverrides.until })
+                .from(deadlineOverrides)
+                .where(and(
+                  eq(deadlineOverrides.subjectId as any, studentId as any),
+                  eq(deadlineOverrides.action as any, 'extend_student_tr' as any),
+                  sql`${deadlineOverrides.until} >= ${now}`,
+                  or(
+                    eq(deadlineOverrides.batchScope as any, (`set:${setId}:students`) as any),
+                    eq(deadlineOverrides.batchScope as any, (`set:${setId}:class:${classId}`) as any)
+                  )
+                ))
+                .limit(1);
+              if (!overRows || (overRows as any[]).length === 0) {
+                return reply.status(403).send({ error: 'forbidden', code: 'package_window_closed', message: '当前作业包窗口未开放', startAt, deadline });
+              }
+              // 命中解锁，则放行
+            } catch {}
           }
         }
       }
@@ -105,6 +127,68 @@ export async function registerSessionRoutes(app: FastifyInstance) {
     if (!row) return reply.send(null);
     // 如果上一条会话未完成，则不允许开始下一次；若已完成则返回 finalizedAt
     return reply.send({ sessionId: row.id, sessionNumber: row.sessionNumber, chatHistory: row.chatHistory, finalizedAt: row.finalizedAt });
+  });
+
+  // 学生查看自身实例的历史产出（日记/活动/作业/LTM）
+  app.get('/student/outputs', {
+    schema: {
+      querystring: {
+        type: 'object',
+        required: ['visitorInstanceId'],
+        properties: { visitorInstanceId: { type: 'string' } },
+      },
+    },
+  }, async (req, reply) => {
+    const db = createDb();
+    const payload = (req as any).auth;
+    const { visitorInstanceId } = (req.query || {}) as any;
+
+    // 必须为已登录学生且为该实例所有者
+    if (!payload || payload.role !== 'student') return reply.status(403).send({ error: 'forbidden' });
+    const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, visitorInstanceId));
+    if (!inst) return reply.status(404).send({ error: 'visitor_instance_not_found' });
+    if ((inst as any).userId !== payload.userId) return reply.status(403).send({ error: 'forbidden' });
+
+    // 拉取该实例的所有会话，按 sessionNumber 降序
+    const sessRows = await db.select().from(sessions)
+      .where(eq(sessions.visitorInstanceId as any, visitorInstanceId))
+      .orderBy(desc(sessions.sessionNumber as any));
+
+    // 日记与活动
+    const diary = (sessRows as any[])
+      .filter(s => !!s.sessionDiary)
+      .map(s => ({ sessionNumber: s.sessionNumber, sessionId: s.id, createdAt: s.createdAt, sessionDiary: s.sessionDiary }));
+    const activity = (sessRows as any[])
+      .filter(s => !!s.preSessionActivity)
+      .map(s => ({ sessionNumber: s.sessionNumber, sessionId: s.id, createdAt: s.createdAt, preSessionActivity: s.preSessionActivity }));
+
+    // 作业：以 homework_submissions 为准
+    const sessionIds = (sessRows as any[]).map(s => (s as any).id);
+    let homework: any[] = [];
+    if (sessionIds.length) {
+      const subs = await db.select({ sessionId: homeworkSubmissions.sessionId, createdAt: homeworkSubmissions.createdAt, formData: homeworkSubmissions.formData })
+        .from(homeworkSubmissions)
+        .where(eq(homeworkSubmissions.studentId as any, (inst as any).userId as any));
+      const byId = new Map<string, any>((sessRows as any[]).map(s => [(s as any).id, s]));
+      homework = (subs as any[]).map((r:any) => {
+        const s = byId.get((r as any).sessionId);
+        return { sessionNumber: s?.sessionNumber, sessionId: r.sessionId, createdAt: r.createdAt, homework: (r as any).formData };
+      });
+    }
+
+    // LTM：当前 + 历史版本
+    const ltmHist = await db
+      .select({ createdAt: longTermMemoryVersions.createdAt, content: longTermMemoryVersions.content })
+      .from(longTermMemoryVersions)
+      .where(eq(longTermMemoryVersions.visitorInstanceId as any, visitorInstanceId))
+      .orderBy(desc(longTermMemoryVersions.createdAt as any));
+
+    return reply.send({
+      diary,
+      activity,
+      homework,
+      ltm: { current: (inst as any).longTermMemory, history: ltmHist },
+    });
   });
 
   // 历史列表（分页）

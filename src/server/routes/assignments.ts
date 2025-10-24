@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../../db/client';
-import { sessions, visitorInstances, assistantStudents, assistantChatMessages, homeworkSubmissions, users, homeworkSets } from '../../db/schema';
-import { eq, and, desc, sql, inArray } from 'drizzle-orm';
+import { sessions, visitorInstances, assistantStudents, assistantChatMessages, homeworkSubmissions, users, homeworkSets, deadlineOverrides } from '../../db/schema';
+import { eq, and, desc, sql, inArray, or } from 'drizzle-orm';
 
 export async function registerAssignmentRoutes(app: FastifyInstance) {
   // 学生端作业汇总：按实例列出所有会话的作业与互动状态
@@ -152,7 +152,31 @@ export async function registerAssignmentRoutes(app: FastifyInstance) {
     if (!setRow) return reply.status(404).send({ error: 'homework_set_not_found' });
     const now = new Date();
     if (!(now >= (setRow as any).studentStartAt && now <= (setRow as any).studentDeadline)) {
-      return reply.status(403).send({ error: 'forbidden', code: 'student_window_closed' });
+      // 窗口关闭 → 检查作业包定向解锁（学生维度）
+      try {
+        const setId = (setRow as any).id as string;
+        const classId = (setRow as any).classId as number;
+        const studentId = (inst as any).userId as string;
+        const over = await db
+          .select({ until: deadlineOverrides.until })
+          .from(deadlineOverrides)
+          .where(and(
+            eq(deadlineOverrides.subjectId as any, studentId as any),
+            eq(deadlineOverrides.action as any, 'extend_student_tr' as any),
+            sql`${deadlineOverrides.until} >= ${now}`,
+            or(
+              eq(deadlineOverrides.batchScope as any, (`set:${setId}:students`) as any),
+              eq(deadlineOverrides.batchScope as any, (`set:${setId}:class:${classId}`) as any)
+            )
+          ))
+          .limit(1);
+        if (!(over as any[]).length) {
+          return reply.status(403).send({ error: 'forbidden', code: 'student_window_closed' });
+        }
+        // 命中解锁 → 放行
+      } catch {
+        return reply.status(403).send({ error: 'forbidden', code: 'student_window_closed' });
+      }
     }
 
     // 字段必填校验（所有字段均必填）

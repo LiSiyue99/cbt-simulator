@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { createDb } from '../../db/client';
 import { systemConfigs, deadlineOverrides, users, sessions, sessionDeadlineOverrides, visitorInstances, visitorTemplates, auditLogs, assistantStudents, homeworkSets, whitelistEmails } from '../../db/schema';
 import { formatWeekKey } from '../../policy/timeWindow';
-import { eq, and, desc, inArray, sql } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql, or } from 'drizzle-orm';
 import { createId } from '@paralleldrive/cuid2';
 
 export async function registerAdminRoutes(app: FastifyInstance) {
@@ -663,10 +663,23 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
   // List homework sets
   app.get('/admin/homework/sets', async (req, reply) => {
-    const payload = (app as any).requireRole(req, ['admin']);
+    const payload = (app as any).requireRole(req, ['admin','assistant_class']);
     const db = createDb();
     const { classId, sequenceNumber } = (req.query || {}) as any;
     let rows = await db.select().from(homeworkSets).orderBy(desc(homeworkSets.updatedAt as any));
+    // assistant_class 仅能看到自己班级
+    if ((payload as any).role === 'assistant_class') {
+      const allowed = new Set<string>();
+      try {
+        const [me] = await db.select({ classId: users.classId }).from(users).where(eq(users.id as any, (payload as any).userId));
+        if ((me as any)?.classId != null) allowed.add(String((me as any).classId));
+      } catch {}
+      const scopes = Array.isArray((payload as any).classScopes)
+        ? (payload as any).classScopes.filter((s:any)=> s && (s.role==='assistant_class' || s.role==='admin') && s.classId)
+        : [];
+      for (const s of scopes) allowed.add(String((s as any).classId));
+      if (allowed.size > 0) rows = (rows as any[]).filter((r:any)=> allowed.has(String(r.classId)));
+    }
     if (classId !== undefined) rows = (rows as any[]).filter((r:any)=> String(r.classId) === String(classId));
     if (sequenceNumber !== undefined) rows = (rows as any[]).filter((r:any)=> Number(r.sequenceNumber) === Number(sequenceNumber));
     return reply.send({ items: rows });
@@ -674,24 +687,52 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
   // Get a homework set by id
   app.get('/admin/homework/sets/:id', async (req, reply) => {
-    const payload = (app as any).requireRole(req, ['admin']);
+    const payload = (app as any).requireRole(req, ['admin','assistant_class']);
     const db = createDb();
     const { id } = req.params as any;
     const [row] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
     if (!row) return reply.status(404).send({ error: 'not_found' });
+    if ((payload as any).role === 'assistant_class') {
+      const allowed = new Set<string>();
+      try {
+        const [me] = await db.select({ classId: users.classId }).from(users).where(eq(users.id as any, (payload as any).userId));
+        if ((me as any)?.classId != null) allowed.add(String((me as any).classId));
+      } catch {}
+      const scopes = Array.isArray((payload as any).classScopes)
+        ? (payload as any).classScopes.filter((s:any)=> s && (s.role==='assistant_class' || s.role==='admin') && s.classId)
+        : [];
+      for (const s of scopes) allowed.add(String((s as any).classId));
+      if (allowed.size > 0 && !allowed.has(String((row as any).classId))) return reply.status(403).send({ error: 'forbidden' });
+    }
     return reply.send({ item: row });
   });
 
   // Update a homework set (including DDL windows and formFields)
   app.put('/admin/homework/sets/:id', async (req, reply) => {
-    const payload = (app as any).requireRole(req, ['admin']);
+    const payload = (app as any).requireRole(req, ['admin','assistant_class']);
     const db = createDb();
     const { id } = req.params as any;
     const body = (req.body || {}) as any;
-    const allowed: any = {};
-    ['title','description','studentStartAt','studentDeadline','assistantStartAt','assistantDeadline','status','formFields'].forEach(k => {
-      if (body[k] !== undefined) allowed[k] = ['studentStartAt','studentDeadline','assistantStartAt','assistantDeadline'].includes(k) ? new Date(body[k]) : body[k];
-    });
+    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
+    if (!setRow) return reply.status(404).send({ error: 'not_found' });
+    // assistant_class 仅允许更新截止时间字段，且限本班
+    let allowed: any = {};
+    const keysAdmin = ['title','description','studentStartAt','studentDeadline','assistantStartAt','assistantDeadline','status','formFields'];
+    const keysAssistantClass = ['studentDeadline','assistantDeadline'];
+    const keys = (payload as any).role === 'assistant_class' ? keysAssistantClass : keysAdmin;
+    if ((payload as any).role === 'assistant_class') {
+      const allowed = new Set<string>();
+      try {
+        const [me] = await db.select({ classId: users.classId }).from(users).where(eq(users.id as any, (payload as any).userId));
+        if ((me as any)?.classId != null) allowed.add(String((me as any).classId));
+      } catch {}
+      const scopes = Array.isArray((payload as any).classScopes)
+        ? (payload as any).classScopes.filter((s:any)=> s && (s.role==='assistant_class' || s.role==='admin') && s.classId)
+        : [];
+      for (const s of scopes) allowed.add(String((s as any).classId));
+      if (allowed.size > 0 && !allowed.has(String((setRow as any).classId))) return reply.status(403).send({ error: 'forbidden' });
+    }
+    keys.forEach(k => { if (body[k] !== undefined) allowed[k] = ['studentStartAt','studentDeadline','assistantStartAt','assistantDeadline'].includes(k) ? new Date(body[k]) : body[k]; });
     if (Object.keys(allowed).length === 0) return reply.status(400).send({ error: 'no_changes' });
     allowed.updatedAt = new Date();
     try {
@@ -720,11 +761,23 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
   // Override summary for a homework set (current package week only)
   app.get('/admin/homework/sets/:id/override-summary', async (req, reply) => {
-    const payload = (app as any).requireRole(req, ['admin']);
+    const payload = (app as any).requireRole(req, ['admin','assistant_class']);
     const db = createDb();
     const { id } = req.params as any;
     const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
     if (!setRow) return reply.status(404).send({ error: 'homework_set_not_found' });
+    if ((payload as any).role === 'assistant_class') {
+      const allowed = new Set<string>();
+      try {
+        const [me] = await db.select({ classId: users.classId }).from(users).where(eq(users.id as any, (payload as any).userId));
+        if ((me as any)?.classId != null) allowed.add(String((me as any).classId));
+      } catch {}
+      const scopes = Array.isArray((payload as any).classScopes)
+        ? (payload as any).classScopes.filter((s:any)=> s && (s.role==='assistant_class' || s.role==='admin') && s.classId)
+        : [];
+      for (const s of scopes) allowed.add(String((s as any).classId));
+      if (allowed.size > 0 && !allowed.has(String((setRow as any).classId))) return reply.status(403).send({ error: 'forbidden' });
+    }
 
     const classId = (setRow as any).classId as number;
     const wkStudent = formatWeekKey(new Date((setRow as any).studentDeadline));
@@ -797,5 +850,181 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     await db.insert(deadlineOverrides).values(values as any);
     await writeAudit(db, (payload as any).userId, 'ddl_override_batch_assistants', 'homework_set', id, `${action} week ${wk} count ${values.length}`);
     return reply.send({ ok: true, affected: values.length, batchId, weekKey: wk });
+  });
+
+  // Homework set scoped: targeted DDL override for specific students by IDs
+  app.post('/admin/homework/sets/:id/ddl-override/students/ids', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['admin','assistant_class']);
+    const db = createDb();
+    const { id } = req.params as any;
+    const { studentIds, action, until, reason } = (req.body || {}) as any;
+    if (!Array.isArray(studentIds) || !studentIds.length) return reply.status(400).send({ error: 'missing studentIds' });
+    if (!action || !until) return reply.status(400).send({ error: 'missing fields' });
+
+    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
+    if (!setRow) return reply.status(404).send({ error: 'homework_set_not_found' });
+    if ((payload as any).role === 'assistant_class') {
+      const allowed = new Set<string>();
+      try {
+        const [me] = await db.select({ classId: users.classId }).from(users).where(eq(users.id as any, (payload as any).userId));
+        if ((me as any)?.classId != null) allowed.add(String((me as any).classId));
+      } catch {}
+      const scopes = Array.isArray((payload as any).classScopes)
+        ? (payload as any).classScopes.filter((s:any)=> s && (s.role==='assistant_class' || s.role==='admin') && s.classId)
+        : [];
+      for (const s of scopes) allowed.add(String((s as any).classId));
+      if (allowed.size > 0 && !allowed.has(String((setRow as any).classId))) return reply.status(403).send({ error: 'forbidden' });
+    }
+
+    // 仅允许本班学生
+    const rows = await db.select({ id: users.id }).from(users)
+      .where(and(eq(users.role as any, 'student' as any), eq(users.classId as any, (setRow as any).classId)));
+    const validIds = new Set((rows as any[]).map((r:any)=> r.id));
+    const targets = (studentIds as any[]).filter((sid:any)=> validIds.has(sid));
+    const ignored = (studentIds as any[]).filter((sid:any)=> !validIds.has(sid));
+    if (!targets.length) return reply.send({ ok: true, affected: 0, ignored: (ignored as any[]).length });
+
+    const wk = formatWeekKey(new Date((setRow as any).studentDeadline)); // 仅作占位填充
+    const batchId = crypto.randomUUID();
+    const values = targets.map((sid:string)=>({
+      subjectType: 'student', subjectId: sid, weekKey: wk, action,
+      until: new Date(until), reason,
+      batchId, batchScope: `set:${id}:students`, createdAt: new Date(), createdBy: (payload as any).userId,
+    }));
+    await db.insert(deadlineOverrides).values(values as any);
+    await writeAudit(db, (payload as any).userId, 'ddl_override_set_students_ids', 'homework_set', id, `${action} ids ${targets.length}`);
+    return reply.send({ ok: true, affected: values.length, ignored: (ignored as any[]).length, batchId });
+  });
+
+  // Homework set scoped: targeted DDL override for specific students by emails
+  app.post('/admin/homework/sets/:id/ddl-override/students/emails', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['admin','assistant_class']);
+    const db = createDb();
+    const { id } = req.params as any;
+    const { emails, action, until, reason } = (req.body || {}) as any;
+    if (!Array.isArray(emails) || !emails.length) return reply.status(400).send({ error: 'missing emails' });
+    if (!action || !until) return reply.status(400).send({ error: 'missing fields' });
+
+    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
+    if (!setRow) return reply.status(404).send({ error: 'homework_set_not_found' });
+    if ((payload as any).role === 'assistant_class') {
+      const allowed = new Set<string>();
+      try {
+        const [me] = await db.select({ classId: users.classId }).from(users).where(eq(users.id as any, (payload as any).userId));
+        if ((me as any)?.classId != null) allowed.add(String((me as any).classId));
+      } catch {}
+      const scopes = Array.isArray((payload as any).classScopes)
+        ? (payload as any).classScopes.filter((s:any)=> s && (s.role==='assistant_class' || s.role==='admin') && s.classId)
+        : [];
+      for (const s of scopes) allowed.add(String((s as any).classId));
+      if (allowed.size > 0 && !allowed.has(String((setRow as any).classId))) return reply.status(403).send({ error: 'forbidden' });
+    }
+
+    // 仅允许本班学生（支持按邮箱或姓名匹配）
+    const allStu = await db
+      .select({ id: users.id, email: users.email, name: users.name })
+      .from(users)
+      .where(and(eq(users.role as any, 'student' as any), eq(users.classId as any, (setRow as any).classId)));
+    const emailToId = new Map((allStu as any[]).map((u:any)=> [String((u as any).email||'').toLowerCase(), (u as any).id]));
+    const nameToIds = new Map<string, string[]>();
+    for (const s of (allStu as any[])) {
+      const key = String(((s as any).name || '').toLowerCase().trim());
+      if (!nameToIds.has(key)) nameToIds.set(key, []);
+      nameToIds.get(key)!.push((s as any).id);
+    }
+    const sourceList = (emails as any[]).map((v:any)=> String(v||'').trim()).filter(Boolean);
+    const normalized = sourceList.map((e:any)=> e.toLowerCase());
+    const targets: string[] = [];
+    const missing: string[] = [];
+    const ambiguous: string[] = [];
+    for (let i=0;i<normalized.length;i++) {
+      const raw = sourceList[i];
+      const q = normalized[i];
+      const looksEmail = q.includes('@');
+      if (looksEmail) {
+        const sid = emailToId.get(q);
+        if (sid) { targets.push(sid); continue; }
+      }
+      // 姓名精确匹配（不区分大小写，前后空格忽略）
+      const ids = nameToIds.get(q);
+      if (ids && ids.length === 1) { targets.push(ids[0]!); continue; }
+      if (ids && ids.length > 1) { ambiguous.push(raw); continue; }
+      // 尝试唯一包含匹配
+      const partial = Array.from(nameToIds.entries()).filter(([k])=> k.includes(q));
+      if (partial.length === 1 && partial[0]![1].length === 1) { targets.push(partial[0]![1][0]!); continue; }
+      // 均未命中
+      missing.push(raw);
+    }
+    if (!targets.length) return reply.send({ ok: true, affected: 0, ignored: normalized.length, missingEmails: missing, ambiguousNames: ambiguous });
+
+    const wk = formatWeekKey(new Date((setRow as any).studentDeadline)); // 仅作占位填充
+    const batchId = crypto.randomUUID();
+    const values = targets.map((sid:string)=>({
+      subjectType: 'student', subjectId: sid, weekKey: wk, action,
+      until: new Date(until), reason,
+      batchId, batchScope: `set:${id}:students`, createdAt: new Date(), createdBy: (payload as any).userId,
+    }));
+    await db.insert(deadlineOverrides).values(values as any);
+    await writeAudit(db, (payload as any).userId, 'ddl_override_set_students_emails', 'homework_set', id, `${action} by email/name ${targets.length}`);
+    return reply.send({ ok: true, affected: values.length, ignored: missing.length, missingEmails: missing, ambiguousNames: ambiguous, batchId });
+  });
+
+  // Homework set scoped: recent overrides summary for this set (students + assistants)
+  app.get('/admin/homework/sets/:id/ddl-override/recent', async (req, reply) => {
+    const payload = (app as any).requireRole(req, ['admin','assistant_class']);
+    const db = createDb();
+    const { id } = req.params as any;
+    const [setRow] = await db.select().from(homeworkSets).where(eq(homeworkSets.id as any, id));
+    if (!setRow) return reply.status(404).send({ error: 'homework_set_not_found' });
+    if ((payload as any).role === 'assistant_class') {
+      const allowed = new Set<string>();
+      try {
+        const [me] = await db.select({ classId: users.classId }).from(users).where(eq(users.id as any, (payload as any).userId));
+        if ((me as any)?.classId != null) allowed.add(String((me as any).classId));
+      } catch {}
+      const scopes = Array.isArray((payload as any).classScopes)
+        ? (payload as any).classScopes.filter((s:any)=> s && (s.role==='assistant_class' || s.role==='admin') && s.classId)
+        : [];
+      for (const s of scopes) allowed.add(String((s as any).classId));
+      if (allowed.size > 0 && !allowed.has(String((setRow as any).classId))) return reply.status(403).send({ error: 'forbidden' });
+    }
+
+    const classId = (setRow as any).classId as number;
+    const setId = id as string;
+
+    const rows = await db.select({
+      id: deadlineOverrides.id,
+      subjectType: deadlineOverrides.subjectType,
+      subjectId: deadlineOverrides.subjectId,
+      action: deadlineOverrides.action,
+      until: deadlineOverrides.until,
+      createdAt: deadlineOverrides.createdAt,
+      batchScope: deadlineOverrides.batchScope,
+    }).from(deadlineOverrides)
+      .where(or(
+        eq(deadlineOverrides.batchScope as any, (`set:${setId}:students`) as any),
+        eq(deadlineOverrides.batchScope as any, (`set:${setId}:class:${classId}`) as any),
+        eq(deadlineOverrides.batchScope as any, (`set:${setId}:class:${classId}:assistants`) as any)
+      ))
+      .orderBy(desc(deadlineOverrides.createdAt as any))
+      .limit(100);
+
+    // 补充展示信息：学生/助教邮箱
+    const userIds = Array.from(new Set((rows as any[]).map((r:any)=> (r as any).subjectId)));
+    let userMap = new Map<string, any>();
+    if (userIds.length) {
+      const userRows = await db.select({ id: users.id, email: users.email, name: users.name, role: users.role }).from(users).where(inArray(users.id as any, userIds as any));
+      userMap = new Map((userRows as any[]).map((u:any)=> [(u as any).id, u]));
+    }
+    const items = (rows as any[]).map((r:any)=> ({
+      action: (r as any).action,
+      subjectType: (r as any).subjectType,
+      subjectEmail: (userMap.get((r as any).subjectId) || {}).email || null,
+      subjectName: (userMap.get((r as any).subjectId) || {}).name || null,
+      until: (r as any).until,
+      createdAt: (r as any).createdAt,
+      scope: (r as any).batchScope,
+    }));
+    return reply.send({ items });
   });
 }

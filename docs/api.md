@@ -243,6 +243,35 @@ GET `/visitor/template?visitorInstanceId=...`
 ```
 授权：学生（该实例 owner）、assistant_tech/assistant_class（与实例有绑定）、admin。
 
+### 2.10）学生查看历史产出（开放）
+GET `/student/outputs?visitorInstanceId=...`
+
+响应体
+```json
+{
+  "diary": [
+    { "sessionNumber": 1, "sessionId": "...", "createdAt": "...", "sessionDiary": "..." }
+  ],
+  "activity": [
+    { "sessionNumber": 1, "sessionId": "...", "createdAt": "...", "preSessionActivity": { } }
+  ],
+  "homework": [
+    { "sessionNumber": 1, "sessionId": "...", "createdAt": "...", "homework": { } }
+  ],
+  "ltm": {
+    "current": { },
+    "history": [ { "createdAt": "...", "content": { } } ]
+  }
+}
+```
+
+说明
+- 授权：仅 `student` 角色且必须为该 `visitorInstanceId` 的所有者。
+- 数据口径：
+  - 日记/活动来源于 `sessions.session_diary/pre_session_activity`（按 `visitorInstanceId` 聚合）。
+  - 作业来自 `homework_submissions`（映射到对应 `sessionNumber`）。
+  - LTM 返回 `visitor_instances.long_term_memory` 当前值与 `long_term_memory_versions` 历史列表。
+
 ## 作业发布与提交（动态表单）
 
 Admin：
@@ -362,9 +391,28 @@ sequenceDiagram
   - 时间窗：GET/POST `/admin/policy/time-window`（页面已弱化，不再展示）
   - 周级 DDL 解锁：POST `/admin/policy/ddl-override`、GET `/admin/policy/ddl-override`、POST `/admin/policy/ddl-override/batch`、GET `/admin/policy/ddl-override/recent`
   - 会话级 DDL：GET/POST `/admin/policy/session-override`、GET `/admin/policy/session-override/recent`
-  - Homework 批量解锁（新增）：
+  - Homework 解锁（更新）：
     - POST `/admin/homework/sets/{id}/ddl-override/students` → `{ action, until, reason? }`（对该包班级所有学生批量放宽；weekKey 取该包 studentDeadline 所在周）
     - POST `/admin/homework/sets/{id}/ddl-override/assistants` → `{ action, until, reason? }`（对负责该班学生的技术助教批量放宽；weekKey 取该包 assistantDeadline 所在周）
+    - POST `/admin/homework/sets/{id}/ddl-override/students/ids` → `{ studentIds:[], action:"extend_student_tr", until:"ISO", reason? }`（仅对所选学生解锁）
+    - POST `/admin/homework/sets/{id}/ddl-override/students/emails` → `{ emails:["a@x.com"], action:"extend_student_tr", until:"ISO", reason? }`（按邮箱匹配同班学生并解锁）
+    - GET `/admin/homework/sets/{id}/ddl-override/recent` → `{ items:[{subjectEmail?,subjectName?,subjectType,action,until,createdAt,scope}] }`（查看该作业包最近解锁记录，含班级批量与定向学生、助教记录）
+
+说明：
+- 新增的“按学生定向解锁”接口绑定到具体作业包作用域，内部复用 `deadline_overrides`，但判定依据来自 `batchScope = set:{setId}:students`，与 weekKey 无强绑定。
+- 行为：若作业包窗口关闭，且存在未过期的定向解锁记录，则允许该学生开始该次对话并提交该包作业。
+
+请求示例（emails 版本）
+```bash
+curl -X POST http://localhost:3000/admin/homework/sets/SET_ID/ddl-override/students/emails \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"emails":["a@x.com","b@y.com"],"action":"extend_student_tr","until":"2025-10-28T16:00:00.000Z"}'
+```
+
+响应
+```json
+{ "ok": true, "affected": 2, "ignored": 0, "missingEmails": [], "batchId": "..." }
+```
 
 ### 管理员：周级 DDL 解锁（批量）
 POST `/admin/policy/ddl-override/batch`
