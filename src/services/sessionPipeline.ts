@@ -75,7 +75,14 @@ export async function runSessionPipeline(input: RunSessionPipelineInput) {
     chatHistory: Array.isArray(input.chatHistory) ? (input.chatHistory as any) : sessionChatToString(input.chatHistory),
     homework: input.assignment ? ([{ title: input.assignment, status: 'assigned' }] as any) : undefined,
     sessionDiary: diary.diary,
-    preSessionActivity: activity.activityJson as any,
+    preSessionActivity: (() => {
+      try {
+        const obj = JSON.parse(activity.activityJson || '{}');
+        return { summary: '', details: obj } as any;
+      } catch {
+        return { summary: '', details: activity.activityJson } as any;
+      }
+    })(),
     createdAt: new Date(),
     updatedAt: new Date(),
   });
@@ -194,7 +201,17 @@ export async function finalizeSessionById(params: { sessionId: string; assignmen
       // 回写 activity
       await db
         .update(sessions)
-        .set({ preSessionActivity: activity.activityJson as any, updatedAt: new Date() })
+        .set({
+          preSessionActivity: (() => {
+            try {
+              const obj = JSON.parse(activity.activityJson || '{}');
+              return { summary: '', details: obj } as any;
+            } catch {
+              return { summary: '', details: activity.activityJson } as any;
+            }
+          })(),
+          updatedAt: new Date(),
+        } as any)
         .where(eq(sessions.id, row.id));
 
       // 写入 LTM 版本并更新实例
@@ -288,9 +305,16 @@ export async function prepareNewSession(sessionId: string): Promise<{ activityJs
   await db
     .update(sessions)
     .set({
-      preSessionActivity: activity.activityJson as any,
+      preSessionActivity: (() => {
+        try {
+          const obj = JSON.parse(activity.activityJson || '{}');
+          return { summary: '', details: obj } as any;
+        } catch {
+          return { summary: '', details: activity.activityJson } as any;
+        }
+      })(),
       updatedAt: new Date(),
-    })
+    } as any)
     .where(eq(sessions.id, sessionId));
 
   // 写 LTM 历史并更新实例

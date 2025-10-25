@@ -31,7 +31,7 @@ export async function generateActivity(input: GenerateActivityInput): Promise<Ge
     async () =>
       chatComplete({
         messages: [
-          { role: 'system', content: '你是格式严格的助手，必须输出<scratchpad>与<activity>，其中<activity>为合法JSON文本。' },
+          { role: 'system', content: '你是格式严格的助手，必须按要求输出<scratchpad>与<activity>，其中<activity>内部包裹的为合法JSON文本。' },
           { role: 'user', content: filled },
         ],
       }),

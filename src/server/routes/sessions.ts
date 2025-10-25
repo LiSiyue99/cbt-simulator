@@ -129,6 +129,74 @@ export async function registerSessionRoutes(app: FastifyInstance) {
     return reply.send({ sessionId: row.id, sessionNumber: row.sessionNumber, chatHistory: row.chatHistory, finalizedAt: row.finalizedAt });
   });
 
+  // 统一快照：进行中、历史、冷却与是否可开始下一次
+  app.get('/sessions/overview', {
+    schema: {
+      querystring: {
+        type: 'object',
+        required: ['visitorInstanceId'],
+        properties: { visitorInstanceId: { type: 'string' } },
+      },
+    },
+  }, async (req, reply) => {
+    const db = createDb();
+    const { visitorInstanceId } = req.query as any;
+
+    // 取该实例所有会话，按 sessionNumber 倒序
+    const rows = await db.select().from(sessions)
+      .where(eq(sessions.visitorInstanceId as any, visitorInstanceId))
+      .orderBy(desc(sessions.sessionNumber as any));
+
+    const current = (rows as any[]).find(s => !(s as any).finalizedAt) || null;
+    const historyRows = (rows as any[]).filter(s => !current || (s as any).id !== (current as any).id);
+    const lastFinalized = (rows as any[]).find(s => !!(s as any).finalizedAt) || null;
+
+    // LTM 就绪
+    const [inst] = await db.select().from(visitorInstances).where(eq(visitorInstances.id as any, visitorInstanceId));
+    const ltmHist = await db
+      .select({ id: longTermMemoryVersions.id })
+      .from(longTermMemoryVersions)
+      .where(eq(longTermMemoryVersions.visitorInstanceId as any, visitorInstanceId));
+    const hasLtm = !!(inst as any)?.longTermMemory && (ltmHist as any[]).length > 0;
+
+    // 最近完成一条的产物就绪
+    const hasDiary = !!(lastFinalized as any)?.sessionDiary;
+    const hasActivity = !!(lastFinalized as any)?.preSessionActivity;
+
+    // 冷却：以最后完成时间 + 120 秒
+    let cooldownRemainingSec = 0;
+    if ((lastFinalized as any)?.finalizedAt) {
+      const until = new Date((lastFinalized as any).finalizedAt as any).getTime() + 120000;
+      const now = Date.now();
+      cooldownRemainingSec = Math.max(0, Math.ceil((until - now) / 1000));
+    }
+
+    const allowStartNext = Boolean(lastFinalized && hasDiary && hasActivity && hasLtm && cooldownRemainingSec === 0);
+
+    return reply.send({
+      current: current ? {
+        sessionId: (current as any).id,
+        sessionNumber: (current as any).sessionNumber,
+        chatHistory: (current as any).chatHistory,
+      } : null,
+      history: (historyRows as any[]).map(r => ({
+        sessionId: (r as any).id,
+        sessionNumber: (r as any).sessionNumber,
+        createdAt: (r as any).createdAt,
+        completed: !!(r as any).finalizedAt,
+        lastMessage: (Array.isArray((r as any).chatHistory) && (r as any).chatHistory.length)
+          ? (() => { const last = (r as any).chatHistory[(r as any).chatHistory.length - 1]; return { speaker: (last as any).speaker, content: (last as any).content, timestamp: (last as any).timestamp }; })()
+          : undefined,
+        messageCount: Array.isArray((r as any).chatHistory) ? (r as any).chatHistory.length : 0,
+        hasDiary: !!(r as any).sessionDiary,
+        hasActivity: !!(r as any).preSessionActivity,
+      })),
+      lastFinalizedSessionId: lastFinalized ? (lastFinalized as any).id : null,
+      cooldownRemainingSec,
+      allowStartNext,
+    });
+  });
+
   // 学生查看自身实例的历史产出（日记/活动/作业/LTM）
   app.get('/student/outputs', {
     schema: {

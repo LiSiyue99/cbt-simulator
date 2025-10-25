@@ -188,7 +188,31 @@ POST `/sessions/{sessionId}/reset`
 
 ---
 
-### 2.6）读取会话历史列表（分页）
+### 2.6）统一快照（推荐）
+GET `/sessions/overview?visitorInstanceId=...`
+
+响应体
+```json
+{
+  "current": { "sessionId": "...", "sessionNumber": 3, "chatHistory": [ ... ] } | null,
+  "history": [
+    { "sessionId": "...", "sessionNumber": 2, "createdAt": "...", "completed": true,
+      "messageCount": 15, "hasDiary": true, "hasActivity": true,
+      "lastMessage": { "speaker": "ai", "content": "...", "timestamp": "..." } }
+  ],
+  "lastFinalizedSessionId": "..." | null,
+  "cooldownRemainingSec": 0,
+  "allowStartNext": true
+}
+```
+
+说明
+- 单次请求返回对话页所需的全部信息：进行中会话、历史列表、最新已完成会话与冷却剩余秒、是否允许开始下一次。
+- 推荐前端仅使用此接口作为单一数据源，避免并发竞态与过期快照。
+
+---
+
+### 2.6a）读取会话历史列表（分页）（保留，前端已不再使用）
 GET `/sessions/list?visitorInstanceId=...&page=1&pageSize=20&includePreview=true`
 
 响应体
@@ -205,7 +229,7 @@ GET `/sessions/list?visitorInstanceId=...&page=1&pageSize=20&includePreview=true
 ```
 
 说明
-- `includePreview=true` 时预览的最后一条消息由应用层从 `chat_history` 读取，避免复杂 SQL 子查询错误。
+- 兼容保留。现有前端已改为使用 `/sessions/overview`。`includePreview=true` 时预览的最后一条消息由应用层从 `chat_history` 读取。
 
 ---
 
